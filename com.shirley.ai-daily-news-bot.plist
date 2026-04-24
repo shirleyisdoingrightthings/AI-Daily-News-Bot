@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/python3.11</string>
-        <string>/Users/shirleywu/Desktop/AI Daily News/daily_report.py</string>
+        <string>/Users/shirleywu/Desktop/AI Daily News Bot/daily_report.py</string>
     </array>
 
     <!-- 每天 08:00 触发；电脑唤醒后如果错过会立即补跑 -->
@@ -45,9 +45,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/shirleywu/Desktop/AI Daily News/launchd.log</string>
+    <string>/Users/shirleywu/Desktop/AI Daily News Bot/launchd.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/shirleywu/Desktop/AI Daily News/launchd.log</string>
+    <string>/Users/shirleywu/Desktop/AI Daily News Bot/launchd.log</string>
 
     <key>RunAtLoad</key>   <false/>
 </dict>
