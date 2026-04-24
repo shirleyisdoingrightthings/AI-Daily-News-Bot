@@ -71,11 +71,11 @@ RSS × 10 源 ──▶  build_ai_context()
 
 ### 数据源与 API
 
-| 类别 | 来源 | 数量 | 备注 |
+| 类别 | 来源 | 条数 | 备注 |
 |-----|------|------|------|
-| 顶级科技 | The Verge / Wired / TechCrunch / Engadget | 每源 5 条 | 免费 RSS |
-| 学术深度 | MIT Tech Review / IEEE Spectrum / Ars Technica | 每源 3 条 | 免费 RSS |
-| 行业垂直 | VentureBeat (AI) / The Decoder | 每源 5 条 | 免费 RSS |
+| 主流科技（5 条） | The Verge (AI) / TechCrunch / VentureBeat (AI) | 各 5 条 | 免费 RSS |
+| 主流科技（4 条） | Engadget | 4 条 | 免费 RSS |
+| 深度/垂直（3 条） | The Verge (Reviews) / Wired / MIT Tech Review / IEEE Spectrum / Ars Technica / The Decoder | 各 3 条 | 免费 RSS |
 | AI 模型 | DeepSeek | - | 用于分析与总结 |
 
 ### 日志格式（不得改动）
@@ -90,7 +90,7 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 - 单条消息上限 4096 字符
 
 ### 新闻时效
-- AI Daily News Bot 收录 **3 天内**新闻（`timedelta(days=3)`）
+- AI Daily News Bot 收录 **24 小时内**新闻（`timedelta(days=1)`）
 
 ### 代理
 - 固定走 `127.0.0.1:YOUR_PORT` (本地代理端口)
@@ -115,7 +115,7 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 | 修改 `run.log` 的 `[OK]/[FAIL]/[WARN]` 格式 | health_check.sh 依赖字符串匹配 |
 | 删除 `flush_pending()` 调用 | 会导致失败消息永久丢失 |
 | 修改 PROMPT 中的 HTML 输出格式 | Telegram 不支持 Markdown |
-| 将 `timedelta(days=3)` 改小 | 会漏掉重要新闻 |
+| 将 `timedelta(days=1)` 改小 | 会漏掉重要新闻 |
 | 修改 `with_retry` 的 exceptions 参数 | 会影响重试覆盖范围 |
 | 替换核心 RSS 源 | 确保数据抓取的广度与质量 |
 | 修改 `daily_report.py` 的 HTML 清洗逻辑 | 防止 Telegram 消息推送由于标签不规范而失败 |
