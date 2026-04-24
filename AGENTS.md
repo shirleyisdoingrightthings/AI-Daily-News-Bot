@@ -7,7 +7,7 @@
 
 ## 工作流概述
 
-这是一个**完全自治的AI市场日报系统**。主脚本 `daily_report.py` 每天早上 8:00 由 launchd 自动触发，无需人工干预。
+这是一个 **AI 产业日报系统**。主脚本 `daily_report.py` 每天由 launchd 自动触发，负责从全球多媒体源抓取资讯并生成深度分析报告。
 
 ### 数据流
 
@@ -71,15 +71,12 @@ RSS × 10 源 ──▶  build_ai_context()
 
 ### 数据源与 API
 
-| API | 接口 | 内容 | Plan |
+| 类别 | 来源 | 数量 | 备注 |
 |-----|------|------|------|
-| CoinGecko | `/simple/price` | BTC/ETH/SOL/BNB/XRP/HYPE 价格 | Demo 免费 |
-| CoinGecko | `/search/trending` | 热搜榜 Top 15（取前 5） | Demo 免费 |
-| CoinGecko | `/global` | AI货币总市值 / 24h成交量 / BTC市占率 | Demo 免费 |
-| CoinGecko | `/global/decentralized_finance_defi` | DeFi 总市值 / 成交量 / 市占率 | Demo 免费 |
-| CoinGecko | `/coins/categories` | 赛道表现（24h 涨幅 Top 5） | Demo 免费 |
-| alternative.me | `/fng/` | 恐惧贪婪指数 | 完全免费 |
-| RSS × 4 | Cointelegraph / CoinDesk / The Block / Decrypt | 新闻 | 免费 |
+| 顶级科技 | The Verge / Wired / TechCrunch / Engadget | 每源 5 条 | 免费 RSS |
+| 学术深度 | MIT Tech Review / IEEE Spectrum / Ars Technica | 每源 3 条 | 免费 RSS |
+| 行业垂直 | VentureBeat (AI) / The Decoder | 每源 5 条 | 免费 RSS |
+| AI 模型 | DeepSeek | - | 用于分析与总结 |
 
 ### 日志格式（不得改动）
 ```
@@ -120,8 +117,8 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 | 修改 PROMPT 中的 HTML 输出格式 | Telegram 不支持 Markdown |
 | 将 `timedelta(days=3)` 改小 | 会漏掉重要新闻 |
 | 修改 `with_retry` 的 exceptions 参数 | 会影响重试覆盖范围 |
-| 替换 CoinGecko 免费接口为付费 Pro 接口 | 会导致 API 认证失败 |
-| 修改价格列表中的币种 ID | CoinGecko ID 必须与官方匹配 |
+| 替换核心 RSS 源 | 确保数据抓取的广度与质量 |
+| 修改 `daily_report.py` 的 HTML 清洗逻辑 | 防止 Telegram 消息推送由于标签不规范而失败 |
 
 ---
 
