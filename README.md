@@ -43,11 +43,9 @@ RSS × 10 源 ──▶  build_ai_context()
 （The Verge / TechCrunch /      │
  VentureBeat / Wired /          ▼
  MIT Tech Review /        generate_report()
- Engadget / IEEE /         (DeepSeek × 1)  ──▶  Telegram 消息（AI 产业日报）
+ Engadget / IEEE /         (DeepSeek × 1)  ──▶  Telegram（AI 产业日报，段落分块发送）
  Ars Technica /
  The Decoder）
-                             ▼
-                                      Telegram（2 条 HTML 消息）
 
 【自动化调度】
 08:00  launchd ──▶ daily_report.py ──▶ run.log [OK/FAIL]
@@ -68,6 +66,8 @@ RSS × 10 源 ──▶  build_ai_context()
 ## 文件结构
 
 ```
+~/Desktop/bot_ops/shared/bot_utils.py  # 外部共享工具库（与 Crypto Daily Bot 共用）
+
 AI Daily News Bot/
 ├── daily_report.py                    # 主脚本（抓取 → 分析 → 推送）
 ├── health_check.sh                     # 健康检查（失败时触发 auto_repair）
@@ -97,7 +97,6 @@ AI Daily News Bot/
 | `DEEPSEEK_API_KEY` | DeepSeek API Key | plist（需手动填入） |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | plist（需手动填入） |
 | `TELEGRAM_CHAT_ID` | 目标 Chat ID | plist（已配置）|
-| `COINGECKO_API_KEY` | CoinGecko Demo Key | plist（已配置）|
 | `HTTPS_PROXY` | 代理地址 | plist（已配置，127.0.0.1:YOUR_PORT）|
 
 ---
@@ -106,7 +105,7 @@ AI Daily News Bot/
 
 **手动运行（测试）**
 ```bash
-cd ~/Desktop/Crypto\ Daily\ Bot
+cd ~/Desktop/AI\ Daily\ News\ Bot
 /opt/homebrew/bin/python3.11 daily_report.py
 ```
 
