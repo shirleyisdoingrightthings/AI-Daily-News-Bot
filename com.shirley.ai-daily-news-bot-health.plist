@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shirley.ai-daily-news-health</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/shirleywu/Desktop/AI Daily News/health_check.sh</string>
+    </array>
+
+    <!-- 每天 08:30 触发 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>    <integer>8</integer>
+        <key>Minute</key>  <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/shirleywu/Desktop/AI Daily News/health_check.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/shirleywu/Desktop/AI Daily News/health_check.log</string>
+
+    <key>RunAtLoad</key>   <false/>
+</dict>
+</plist>

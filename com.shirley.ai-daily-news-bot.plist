@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shirley.ai-daily-news</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/python3.11</string>
+        <string>/Users/shirleywu/Desktop/AI Daily News/daily_report.py</string>
+    </array>
+
+    <!-- 每天 08:00 触发；电脑唤醒后如果错过会立即补跑 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>    <integer>8</integer>
+        <key>Minute</key>  <integer>0</integer>
+    </dict>
+
+    <!--
+        环境变量说明：
+        ✅ 已从脚本提取：TELEGRAM_CHAT_ID / 代理地址
+        ⚠️  需要手动填写：DEEPSEEK_API_KEY / TELEGRAM_BOT_TOKEN
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- ⚠️ 填入你的真实 DeepSeek API Key -->
+        <key>DEEPSEEK_API_KEY</key>
+        <string>sk-77aa94165c5b42f79d56b67ed5d3ed5f</string>
+
+        <!-- ⚠️ 填入你的真实 Telegram Bot Token -->
+        <key>TELEGRAM_BOT_TOKEN</key>
+        <string>8258580186:AAE_8WDM_NyiVwGO0OyUrHpMQv_-e_t2IOU</string>
+
+        <!-- ✅ 从脚本提取 -->
+        <key>TELEGRAM_CHAT_ID</key>
+        <string>7788909584</string>
+
+        <!-- ✅ 代理地址 -->
+        <key>HTTPS_PROXY</key>
+        <string>http://127.0.0.1:6984</string>
+        <key>HTTP_PROXY</key>
+        <string>http://127.0.0.1:6984</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/shirleywu/Desktop/AI Daily News/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/shirleywu/Desktop/AI Daily News/launchd.log</string>
+
+    <key>RunAtLoad</key>   <false/>
+</dict>
+</plist>
