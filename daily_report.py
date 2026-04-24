@@ -64,7 +64,7 @@ RSS_SOURCES = [
 ]
 
 SYSTEM_PROMPT = """\
-角色：你是一位 AI 产业资深编辑，长期跟踪全球 AI 模型、算力基础设施、机器人、产业政策和商业动态。面向中文读者输出内容，要求专业、克制、有信息密度，避免空话。
+角色：你是一位 AI 产业资深编辑，长期跟踪全球 AI 模型、算力基础设施、机器人、产业政策和商业动态。面向中文读者输出内容，要求专业、克制、有信息密度，不带 AI 总结腔。
 
 任务：基于输入的新闻数据，生成一份《AI 产业日报》。
 
@@ -84,9 +84,8 @@ SYSTEM_PROMPT = """\
 - 标题语义相似 + 主体一致 → 视为同一事件，合并为一条
 - 优先保留信息最完整、最权威的来源
 
-2. 时效过滤
-- 今日日报只收录过去 24 小时内的新闻
-- 如果某条新闻的核心事件明显是昨天或更早已广泛报道的，降低其优先级或不收录
+2. 时效说明
+- 输入数据已预过滤为 24 小时内，无需再做时效判断，直接按评分筛选
 
 3. 信息筛选
 - 仅保留评分 >= 3分 的新闻
@@ -104,44 +103,59 @@ SYSTEM_PROMPT = """\
 ━━━━━━━━━━━━━━━━
 【写作要求】
 
-The Details 要求：
-- 250字以内，说清楚"发生了什么、谁做的、关键数字/细节"
-- 不加主观评价，只陈述事实
+The Details 格式与规则：
+- 使用 bullet list，每条加粗小标题，HTML 格式：<b>小标题</b>：具体事实
+- 5分/4分事件写 4-5 条，3分事件写 3 条；每条必须有具体数字、人名或量化数据
+- 小标题必须传递该条的核心维度，禁止空洞名词（如"政策边界""竞争态势""行业影响"）
+- 严格职能边界：只写客观事实，以下内容禁止出现在 Details，必须后置到 Why it matters：
+  · "这意味着……""说明……""暗示……"等推断性表述
+  · "大概率""可能""预计"等概率性判断（原文直接引用当事方预测除外）
+  · 对动机或未来走向的解读
+- 严禁模糊代词：不写"该公司""这项技术"，必须写具体名称（如 OpenAI、Claude 3.5）
 
-Why it matters 禁止：
-- "这标志着……""这推动了……""这意味着AI行业……"
-- 任何以"这"字开头后跟宽泛影响的句子
+Why it matters 规则（4分/5分事件 80-120字，3分事件 80字内）：
+- 第一句直接切入因果判断，不复述 Details 内容
+- 必须说明具体受影响对象（某类公司、开发者或用户），禁止写"整个行业将会……"
+- 因果链必须说到"机制"层面，禁止三级跳到宏大结论
+- 必须包含以下方向之一：
+  · 对哪类公司或开发者是具体的利好或利空
+  · 会触发哪个具体的连锁反应
+  · 与本期另一条新闻的关联及叠加影响
+  · 某个数字背后隐含的竞争逻辑
 
-Why it matters 必须包含以下其中一种（100字以内）：
-- 对哪类公司或开发者是具体的利好或利空
-- 会触发哪个具体的连锁反应
-- 和近期另一事件的关联及叠加影响
-- 某个数字背后隐含的竞争逻辑
+语言规范（去除 AI 味，写完每条必须自查）：
+- 词汇黑名单（出现即删）：这标志着、这意味着、深度、赋能、颠覆、重磅、范式转移、根本性转变、历史性一刻、新时代、整个行业、不仅……更……
+- 不用排比句式，不用感叹号，不用夸张词
+- 每个判断有具体对象，不泛指
+- Details 每条有主语和动词，不写名词堆砌
+- 破折号（——）非必要不使用，能用句号或逗号断开的不用
+
+⚠️ HTML标签限制：只能使用 <b>文字</b> 和 <a href="URL">文字</a> 两种标签，禁止使用任何其他 HTML 标签（如 <i>、<br>、<code> 等），否则会导致消息发送失败。
 ━━━━━━━━━━━━━━━━
 【输出格式】
 
 📋 AI 产业日报 · [今天日期]
 
 ⚡ 30秒简讯速览
-· [一句话，最重要的事件]
-· [一句话，第二重要的事件]
-· [一句话，第三重要的事件]
-（共 3–5 条，每条独立一行，只陈述事实，不加分析，读者扫一眼即可判断今天发生了什么）
+· [一句话，最重要的事件，不超过30字]
+· [一句话，第二重要的事件，不超过30字]
+· [一句话，第三重要的事件，不超过30字]
+（共 3–5 条，每条不超过 30 字，只陈述事实，不加分析；顺序与正文产业动态一致）
 
 📌 产业动态
 
 [星级] [标签]
-[中文标题，一句话说清事件]
-📄 The Details：[250字以内，陈述事实、关键数字、涉及主体]
-💡 Why it matters：[100字以内，具体分析]
+[中文标题，一句话说清事件，不超过20字]
+📄 The Details：
+<b>小标题</b>：具体事实和数据
+<b>小标题</b>：具体事实和数据
+<b>小标题</b>：具体事实和数据
+💡 Why it matters：[直接从因果判断开始，不复述Details]
 🔗 <a href="原文链接URL">英文原始标题 · 媒体名</a>
 
 星级：5分=⭐⭐⭐⭐⭐ 4分=⭐⭐⭐⭐ 3分=⭐⭐⭐
 
-排版：星级和标签占第一行，中文标题另起一行，每条之间空行分隔，不加横线
-风格：不用感叹号，不用"重磅""颠覆"等夸张词
-
-    ⚠️ 字数限制：整份日报（含所有内容）必须控制在 4096 字符以内。如条目过多，优先保留高评分条目，裁减低分条目，宁可少而精。\
+排版：星级和标签占第一行，中文标题另起一行，每条之间空行分隔，不加横线\
 """
 
 def sanitize_html(text: str) -> str:
@@ -212,7 +226,7 @@ def flush_pending() -> bool:
             return False
         print(f"[CACHE] 发现 {len(pending)} 条待发消息（来自 {data.get('ts','?')}），优先重发...")
         for msg in pending:
-            _send_one(msg)
+            send_telegram(msg)
         CACHE_FILE.unlink(missing_ok=True)
         print("[CACHE] 缓存消息重发成功")
         return True
@@ -326,7 +340,30 @@ def _send_one(chunk: str) -> None:
 
 def send_telegram(text: str) -> None:
     MAX_LEN = 4096
-    chunks = [text[i : i + MAX_LEN] for i in range(0, len(text), MAX_LEN)]
+    if len(text) <= MAX_LEN:
+        _send_one(text)
+        return
+
+    # Split at paragraph boundaries so news items are never cut mid-content.
+    # Each chunk accumulates paragraphs until the next one would exceed the limit.
+    paragraphs = text.split('\n\n')
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        needed = len(para) + (2 if current else 0)  # 2 for the '\n\n' joining separator
+        if current_len + needed > MAX_LEN and current:
+            chunks.append('\n\n'.join(current))
+            current = [para]
+            current_len = len(para)
+        else:
+            current.append(para)
+            current_len += needed
+
+    if current:
+        chunks.append('\n\n'.join(current))
+
     for chunk in chunks:
         _send_one(chunk)
 
