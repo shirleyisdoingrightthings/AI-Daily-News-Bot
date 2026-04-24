@@ -54,7 +54,8 @@ RSS × 10 源 ──▶  build_ai_context()
 | 文件 | 职责 | 修改频率 |
 |------|------|---------|
 | `daily_report.py` | 主脚本：抓取→生成→推送 | 偶尔 |
-| `health_check.sh` | 检查 run.log，触发 auto_repair | 极少 |
+| `health_check.sh` | 按日期检查今天 [OK]/[FAIL] 状态，含 60s 等待防竞态；触发 auto_repair | 极少 |
+| `~/Desktop/bot_shared/bot_utils.py` | 共享工具库（两个 Bot 共用）：sanitize_html / with_retry / fetch_rss / parse_entry_date / already_ran_today | 偶尔 |
 | `auto_repair.sh` | 两级自动修复代理 | 极少 |
 | `run.log` | 单行摘要日志（人类可读） | 每日写入 |
 | `run.jsonl` | 结构化指标（程序可读） | 每日写入 |
@@ -82,7 +83,11 @@ RSS × 10 源 ──▶  build_ai_context()
 ```
 YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 ```
-`health_check.sh` 依赖 `[FAIL]` 字符串匹配，改动格式会导致健康检查失效。
+`health_check.sh` 用 `grep "$TODAY.*[OK]"` / `grep "$TODAY.*[FAIL]"` 按日期匹配，改动格式会导致健康检查失效。
+
+### 重复推送防护
+`already_ran_today()` 在 `run.log` 中检测到今天已有 `[OK]` 记录时直接退出，防止 launchd 补跑导致重复推送。  
+需要强制重跑时设置环境变量 `FORCE_RUN=1`。
 
 ### Telegram 输出格式
 - 所有 AI 输出必须是 **HTML 格式**，禁止 Markdown
@@ -119,6 +124,7 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 | 修改 `with_retry` 的 exceptions 参数 | 会影响重试覆盖范围 |
 | 替换核心 RSS 源 | 确保数据抓取的广度与质量 |
 | 修改 `daily_report.py` 的 HTML 清洗逻辑 | 防止 Telegram 消息推送由于标签不规范而失败 |
+| 在 `bot_utils.py` 中删除或重命名工具函数 | 两个 Bot 共用，改动会同时影响 AI News Bot 和 Crypto Daily Bot |
 
 ---
 
