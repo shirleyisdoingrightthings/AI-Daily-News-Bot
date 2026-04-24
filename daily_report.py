@@ -8,16 +8,15 @@ import os
 import sys
 import time
 import json
-import socket
-import calendar
 import traceback
-import functools
 import requests
-import feedparser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 from openai import OpenAI
+
+# 共享工具库
+sys.path.insert(0, str(Path.home() / "Desktop" / "bot_shared"))
+from bot_utils import sanitize_html, with_retry, fetch_rss, parse_entry_date, already_ran_today
 
 LOG_FILE   = Path(__file__).parent / "run.log"
 JSONL_FILE = Path(__file__).parent / "run.jsonl"
@@ -144,56 +143,6 @@ Why it matters 必须包含以下其中一种（100字以内）：
     ⚠️ 字数限制：整份日报（含所有内容）必须控制在 4096 字符以内。如条目过多，优先保留高评分条目，裁减低分条目，宁可少而精。\
 """
 
-def sanitize_html(text: str) -> str:
-    """清理 HTML 标签，仅保留 b 和 a，并修复未闭合标签，转义非法字符"""
-    import re
-    # 1. 保护合法标签 <b> </b> <a href="..."> </a>
-    # 将其暂时替换为特殊占位符
-    text = re.sub(r'<b>', '[[B_OPEN]]', text)
-    text = re.sub(r'</b>', '[[B_CLOSE]]', text)
-    # 提取 a 标签
-    a_tags = []
-    def save_a(m):
-        a_tags.append(m.group(0))
-        return f"[[A_TAG_{len(a_tags)-1}]]"
-    text = re.sub(r'<a\s+href="[^"]+">.*?</a>', save_a, text)
-
-    # 2. 转义所有剩余的 < > & (Telegram 要求)
-    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-
-    # 3. 还原合法标签
-    text = text.replace('[[B_OPEN]]', '<b>').replace('[[B_CLOSE]]', '</b>')
-    for i, tag in enumerate(a_tags):
-        text = text.replace(f"[[A_TAG_{i}]]", tag)
-
-    # 4. 最终检查：确保标签闭合（简单计数补全）
-    if text.count('<b>') > text.count('</b>'):
-        text += '</b>' * (text.count('<b>') - text.count('</b>'))
-    if text.count('<a ') > text.count('</a>'):
-        text += '</a>' * (text.count('<a ') - text.count('</a>'))
-    
-    return text
-
-
-# ===== P0: 指数退避重试装饰器 =====
-def with_retry(max_retries=3, base_delay=5.0, exceptions=(Exception,)):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            for attempt in range(max_retries + 1):
-                try:
-                    return func(*args, **kwargs)
-                except exceptions as e:
-                    if attempt == max_retries:
-                        raise
-                    delay = base_delay * (2 ** attempt)
-                    print(f"[RETRY] {func.__name__} 第{attempt+1}次失败: {e}，{delay:.0f}s 后重试",
-                          file=sys.stderr)
-                    time.sleep(delay)
-        return wrapper
-    return decorator
-
-
 # ===== P2: 消息缓存（降级策略）=====
 def save_pending(messages: list) -> None:
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
@@ -219,40 +168,6 @@ def flush_pending() -> bool:
     except Exception as e:
         print(f"[WARN] 缓存重发失败: {e}", file=sys.stderr)
         return False
-
-
-# ===== P1: 抓取 RSS（socket 超时 + 重试兜底）=====
-def fetch_rss(url: str, limit: int, retries: int = 2, delay: float = 3.0) -> list:
-    UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(10)
-    try:
-        for attempt in range(retries + 1):
-            try:
-                feed = feedparser.parse(url, request_headers={"User-Agent": UA})
-                if feed.entries:
-                    return feed.entries[:limit]
-                if attempt < retries:
-                    time.sleep(delay)
-            except Exception as e:
-                if attempt < retries:
-                    time.sleep(delay)
-                else:
-                    print(f"[WARN] 抓取失败（已重试 {retries} 次）{url}: {e}", file=sys.stderr)
-    finally:
-        socket.setdefaulttimeout(old_timeout)
-    return []
-
-
-def parse_entry_date(entry) -> Optional[datetime]:
-    for field in ("published_parsed", "updated_parsed"):
-        t = getattr(entry, field, None)
-        if t:
-            try:
-                return datetime.fromtimestamp(calendar.timegm(t), tz=timezone.utc)
-            except Exception:
-                pass
-    return None
 
 
 # ===== 整理新闻数据 =====
@@ -334,6 +249,11 @@ def send_telegram(text: str) -> None:
 # ===== 主流程 =====
 def main() -> None:
     t0 = time.time()
+
+    # 防重复推送：今天已有 [OK] 记录则跳过（FORCE_RUN=1 可绕过）
+    if already_ran_today(LOG_FILE):
+        print("今天已成功运行过，跳过。如需强制执行请设置 FORCE_RUN=1。")
+        return
 
     # P2: 优先重发上次未发送的缓存消息
     flush_pending()
