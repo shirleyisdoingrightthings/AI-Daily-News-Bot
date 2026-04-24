@@ -79,7 +79,23 @@ if [ -f "$JSONL" ]; then
     fi
 fi
 
-# ── 5. 更新 OK streak，核销 changelog ────────────────────────────────
+# ── 5. 分源监控：检查是否有 RSS 源返回 0 条 ─────────────────────────
+if [ -f "$JSONL" ]; then
+    ZERO_SOURCES=$(grep "$TODAY" "$JSONL" | tail -1 | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    zs = d.get('rss_zero_sources', [])
+    print(','.join(zs) if zs else '')
+except: print('')
+" 2>/dev/null)
+    if [ -n "$ZERO_SOURCES" ]; then
+        osascript -e "display notification \"RSS 源返回 0 条：$ZERO_SOURCES\" with title \"⚠️ AI Daily News Bot\""
+        echo "[health_check] WARN: RSS 零源: $ZERO_SOURCES"
+    fi
+fi
+
+# ── 6. 更新 OK streak，核销 changelog ────────────────────────────────
 STREAK=0
 if [ -f "$OK_COUNT_FILE" ]; then
     STREAK=$(cat "$OK_COUNT_FILE")

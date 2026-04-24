@@ -293,14 +293,20 @@ def main() -> None:
         return
 
     # P2: 优先重发上次未发送的缓存消息
-    flush_pending()
+    if flush_pending():
+        duration = round(time.time() - t0, 1)
+        write_log("OK", "缓存重发完成（上次发送中断）", metrics={"duration_s": duration, "ai_calls": 0})
+        return
 
     print("📡 抓取 RSS 源...")
     all_entries = []
+    source_counts: dict = {}
     for feed_url, limit in RSS_SOURCES:
         entries = fetch_rss(feed_url, limit)
         all_entries.extend(entries)
+        source_counts[feed_url.split("/")[2]] = len(entries)
         print(f"  ✓ {len(entries)} 条  {feed_url}")
+    zero_sources = [d for d, c in source_counts.items() if c == 0]
 
     print(f"\n📰 共抓取 {len(all_entries)} 条，整理过滤中...")
     ai_context = build_ai_context(all_entries)
@@ -333,6 +339,7 @@ def main() -> None:
         f"抓取{len(all_entries)}条 → 保留{entry_count}条 → Telegram发送成功",
         metrics={
             "rss_fetched": len(all_entries), "rss_kept": entry_count,
+            "rss_zero_sources": zero_sources,
             "ai_calls": 1, "duration_s": duration,
         },
     )
