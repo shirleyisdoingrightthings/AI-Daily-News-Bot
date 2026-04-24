@@ -56,7 +56,8 @@ RSS × 10 源 ──▶  build_ai_context()
 | `daily_report.py` | 主脚本：抓取→生成→推送 | 偶尔 |
 | `health_check.sh` | 按日期检查今天 [OK]/[FAIL] 状态，含 60s 等待防竞态；触发 auto_repair | 极少 |
 | `~/Desktop/bot_ops/shared/bot_utils.py` | 共享工具库（两个 Bot 共用）：sanitize_html / with_retry / fetch_rss / parse_entry_date / already_ran_today | 偶尔 |
-| `auto_repair.sh` | 两级自动修复代理 | 极少 |
+| `auto_repair.sh` | 薄包装：设置 BOT_NAME/SCRIPT/ERROR，委托 `bot_ops/auto_repair_base.sh` 执行 | 极少 |
+| `~/Desktop/bot_ops/auto_repair_base.sh` | 共享修复逻辑（Level 1 重跑 / Level 2 Claude CLI）；两个 Bot 共用 | 极少 |
 | `run.log` | 单行摘要日志（人类可读） | 每日写入 |
 | `run.jsonl` | 结构化指标（程序可读） | 每日写入 |
 | `changelog.md` | 问题追踪，与 health_check 联动 | 按需 |
@@ -109,7 +110,11 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 ### 消息缓存降级
 - AI 生成完成后立即写 `pending_messages.json`
 - Telegram 发送成功后删除该文件
-- 下次启动时 `flush_pending()` 优先重发缓存消息
+- 下次启动时 `flush_pending()` 优先重发缓存消息；重发成功后直接写 `[OK]` 并退出，不重新抓取数据
+
+### 分源零条监控
+- 每次运行将各 RSS 源抓取数写入 JSONL 的 `rss_zero_sources` 字段
+- `health_check.sh` 步骤 5 检测到零源时发送 macOS 通知，但不触发 auto_repair（不影响整体 OK）
 
 ---
 
