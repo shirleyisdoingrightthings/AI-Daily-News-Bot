@@ -1,12 +1,12 @@
 # AI Daily News Bot
 
-每天早上 8 点自动运行。聚合 10 家全球顶级 AI 媒体的当日报道，由 DeepSeek 完成去重、评分与深度分析，生成一份结构化日报发到 Telegram。不用打开浏览器，不用切换信息源，值得看的 AI 动态已经替你整理好了。
+每天早上 8 点自动运行。聚合 9 家全球顶级 AI 媒体的当日报道，由 DeepSeek 完成去重、评分与深度分析，生成一份结构化日报发到 Telegram。不用打开浏览器，不用切换信息源，值得看的 AI 动态已经替你整理好了。
 
 ---
 
 ## 核心特性
 
-**数据来源 — 10 家媒体，覆盖主流到学术**
+**数据来源 — 9 家媒体，覆盖主流到学术**
 
 | 类型 | 媒体 |
 |------|------|
@@ -51,7 +51,7 @@
 
 ```
 [数据源]                      [处理]           [输出]
-RSS × 10 源 ──▶  build_ai_context()
+RSS × 9 源 ──▶  build_ai_context()
 （The Verge / TechCrunch /      │
  VentureBeat / Wired /          ▼
  MIT Tech Review /        generate_report()
