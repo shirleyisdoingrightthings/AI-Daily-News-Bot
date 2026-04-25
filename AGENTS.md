@@ -54,16 +54,14 @@ RSS × 10 源 ──▶  build_ai_context()
 | 文件 | 职责 | 修改频率 |
 |------|------|---------|
 | `daily_report.py` | 主脚本：抓取→生成→推送 | 偶尔 |
-| `health_check.sh` | 按日期检查今天 [OK]/[FAIL] 状态，含 60s 等待防竞态；触发 auto_repair | 极少 |
-| `~/Desktop/bot_ops/shared/bot_utils.py` | 共享工具库（两个 Bot 共用）：sanitize_html / with_retry / fetch_rss / parse_entry_date / already_ran_today | 偶尔 |
-| `auto_repair.sh` | 薄包装：设置 BOT_NAME/SCRIPT/ERROR，委托 `bot_ops/auto_repair_base.sh` 执行 | 极少 |
-| `~/Desktop/bot_ops/auto_repair_base.sh` | 共享修复逻辑（Level 1 重跑 / Level 2 Claude CLI）；两个 Bot 共用 | 极少 |
-| `run.log` | 单行摘要日志（人类可读） | 每日写入 |
-| `run.jsonl` | 结构化指标（程序可读） | 每日写入 |
+| `health_check.sh` | 检查 run.log，触发 auto_repair | 极少 |
+| `auto_repair.sh` | 两级自动修复代理 | 极少 |
+| `logs/run.log` | 单行摘要日志（人类可读） | 每日写入 |
+| `logs/run.jsonl` | 结构化指标（程序可读） | 每日写入 |
+| `logs/launchd.log` | launchd 的 stdout/stderr | 每日写入 |
+| `logs/health_check.log` | health_check 运行日志 | 每日写入 |
 | `changelog.md` | 问题追踪，与 health_check 联动 | 按需 |
 | `pending_messages.json` | Telegram 发送缓存（降级保护） | 临时 |
-| `launchd.log` | launchd 的 stdout/stderr | 每日写入 |
-| `health_check.log` | health_check 运行日志 | 每日写入 |
 | `com.shirley.ai-daily-news-bot.plist` | 主脚本 launchd 配置 | 极少 |
 | `com.shirley.ai-daily-news-bot-health.plist` | health_check launchd 配置 | 极少 |
 
@@ -84,11 +82,7 @@ RSS × 10 源 ──▶  build_ai_context()
 ```
 YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 ```
-`health_check.sh` 用 `grep "$TODAY.*[OK]"` / `grep "$TODAY.*[FAIL]"` 按日期匹配，改动格式会导致健康检查失效。
-
-### 重复推送防护
-`already_ran_today()` 在 `run.log` 中检测到今天已有 `[OK]` 记录时直接退出，防止 launchd 补跑导致重复推送。  
-需要强制重跑时设置环境变量 `FORCE_RUN=1`。
+`health_check.sh` 依赖 `[FAIL]` 字符串匹配，改动格式会导致健康检查失效。
 
 ### Telegram 输出格式
 - 所有 AI 输出必须是 **HTML 格式**，禁止 Markdown
@@ -110,11 +104,7 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 ### 消息缓存降级
 - AI 生成完成后立即写 `pending_messages.json`
 - Telegram 发送成功后删除该文件
-- 下次启动时 `flush_pending()` 优先重发缓存消息；重发成功后直接写 `[OK]` 并退出，不重新抓取数据
-
-### 分源零条监控
-- 每次运行将各 RSS 源抓取数写入 JSONL 的 `rss_zero_sources` 字段
-- `health_check.sh` 步骤 5 检测到零源时发送 macOS 通知，但不触发 auto_repair（不影响整体 OK）
+- 下次启动时 `flush_pending()` 优先重发缓存消息
 
 ---
 
@@ -129,7 +119,6 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 | 修改 `with_retry` 的 exceptions 参数 | 会影响重试覆盖范围 |
 | 替换核心 RSS 源 | 确保数据抓取的广度与质量 |
 | 修改 `daily_report.py` 的 HTML 清洗逻辑 | 防止 Telegram 消息推送由于标签不规范而失败 |
-| 在 `bot_utils.py` 中删除或重命名工具函数 | 两个 Bot 共用，改动会同时影响 AI News Bot 和 Crypto Daily Bot |
 
 ---
 
@@ -137,16 +126,16 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 
 ```bash
 # 查看最近运行状态
-tail -5 run.log
+tail -5 logs/run.log
 
 # 查看结构化指标（含耗时）
-tail -3 run.jsonl | python3 -m json.tool
+tail -3 logs/run.jsonl | python3 -m json.tool
 
 # 查看当前问题清单
 cat changelog.md
 
 # 查看 launchd 原始输出
-tail -20 launchd.log
+tail -20 logs/launchd.log
 
 # 手动运行主脚本
 /opt/homebrew/bin/python3.11 daily_report.py
