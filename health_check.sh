@@ -8,9 +8,9 @@
 #   2. 成功时核销 changelog.md 中已修复的条目（连续 3 次 OK 后删除）
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG="$DIR/run.log"
+LOG="$DIR/logs/run.log"
 CHANGELOG="$DIR/changelog.md"
-OK_COUNT_FILE="$DIR/.ok_streak"
+OK_COUNT_FILE="$DIR/logs/.ok_streak"
 TODAY=$(date '+%Y-%m-%d')
 
 # ── 1. 检查 run.log 是否存在 ─────────────────────────────────────────
@@ -70,7 +70,7 @@ elif [ "$STATUS" = "MISSING" ]; then
 fi
 
 # ── 4. 今天 OK：内容质量校验 ─────────────────────────────────────────
-JSONL="$DIR/run.jsonl"
+JSONL="$DIR/logs/run.jsonl"
 if [ -f "$JSONL" ]; then
     LAST_KEPT=$(grep "$TODAY" "$JSONL" | tail -1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rss_kept',99))" 2>/dev/null)
     if [ -n "$LAST_KEPT" ] && [ "$LAST_KEPT" -lt 3 ] 2>/dev/null; then
