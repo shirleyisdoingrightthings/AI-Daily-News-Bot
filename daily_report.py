@@ -48,7 +48,7 @@ def write_log(status: str, message: str, metrics: dict = None) -> None:
 # ===== 配置（优先读取环境变量）=====
 DEEPSEEK_API_KEY   = os.getenv("DEEPSEEK_API_KEY",   "your_deepseek_api_key")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "your_telegram_bot_token")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "7788909584")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "your_telegram_chat_id")
 
 RSS_SOURCES = [
     ("https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", 5),
