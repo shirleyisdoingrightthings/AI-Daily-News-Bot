@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/python3.11</string>
+        <string>/usr/bin/python3</string>
         <string>/Users/shirleywu/Desktop/AI Daily News/daily_report.py</string>
     </array>
 
@@ -21,14 +21,10 @@
     <!--
         环境变量说明：
         ✅ 已从脚本提取：TELEGRAM_CHAT_ID / 代理地址
-        ⚠️  需要手动填写：DEEPSEEK_API_KEY / TELEGRAM_BOT_TOKEN
+        ⚠️  需要手动填写：TELEGRAM_BOT_TOKEN
     -->
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- ⚠️ 填入你的真实 DeepSeek API Key -->
-        <key>DEEPSEEK_API_KEY</key>
-        <string>YOUR_DEEPSEEK_KEY</string>
-
         <!-- ⚠️ 填入你的真实 Telegram Bot Token -->
         <key>TELEGRAM_BOT_TOKEN</key>
         <string>YOUR_TELEGRAM_TOKEN</string>

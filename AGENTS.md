@@ -7,30 +7,31 @@
 
 ## 工作流概述
 
-这是一个 **AI 产业日报系统**。主脚本 `daily_report.py` 每天由 launchd 自动触发，负责从全球多媒体源抓取资讯并生成深度分析报告。
+这是一个 **AI 产业日报系统**。每早由本地 Claude 定时任务触发：`daily_report.py --mode fetch` 抓取资讯（best-effort 抓正文全文，失败回退 RSS 摘要）→ Claude 按 `prompt.md` 写稿 → `daily_report.py --mode send` 推送 Telegram。脚本本身只做抓取与发送，零第三方大模型 API、零 token 成本。
 
 ### 数据流
 
 ```
-[数据源]                      [处理]           [输出]
-RSS × 10 源 ──▶  build_ai_context()
-（The Verge / TechCrunch /      │
- VentureBeat / Wired /          ▼
- MIT Tech Review /        generate_report()
- Engadget / IEEE /         (DeepSeek × 1)  ──▶  Telegram 消息（AI 产业日报）
- Ars Technica /
- The Decoder）
- Telegram 消息②（新闻播报）
+[数据源]                          [抓取 / 写稿]                     [输出]
+RSS × 10 源 ──▶ daily_report.py --mode fetch
+（The Verge / TechCrunch /         │  build_ai_context()
+ VentureBeat / Wired /             │  ├─ 并发 best-effort 抓正文全文
+ MIT Tech Review / Engadget /      │  └─ 抓不到 → 回退 RSS 摘要
+ IEEE / Ars Technica /             ▼
+ The Decoder）              Claude 按 prompt.md 写稿 → logs/report_draft.txt
+                                   ▼
+                            daily_report.py --mode send ──▶ Telegram（AI 产业日报）
 ```
 
 ### 自动化调度
 
 ```
-08:00  launchd → daily_report.py
+09:53  Claude 定时任务（唯一写稿入口）
+         claude_report.sh fetch → Claude 写稿 → claude_report.sh send
                        │
                   run.log [OK/FAIL]
 
-08:30  launchd → health_check.sh
+11:00  launchd → health_check.sh
                        │
            ┌── [OK] ───┴── .ok_streak +1
            │                streak ≥ 3 → 删除 changelog 中 [x] 条目
@@ -53,17 +54,22 @@ RSS × 10 源 ──▶  build_ai_context()
 
 | 文件 | 职责 | 修改频率 |
 |------|------|---------|
-| `daily_report.py` | 主脚本：抓取→生成→推送 | 偶尔 |
+| `daily_report.py` | 主脚本：`--mode fetch`（抓取+抓正文）/ `send`（清洗+推送），零第三方大模型 API | 偶尔 |
+| `claude_report.sh` | 供 Claude 定时任务调用的 fetch/send 封装（从 plist 加载环境变量） | 极少 |
+| `prompt.md` | 写稿规范（唯一权威源，Claude 依此写稿） | 偶尔 |
+| `~/Desktop/bot_ops/shared/bot_utils.py` | 共享工具库（两个 Bot 共用）：sanitize_html / with_retry / fetch_rss / parse_entry_date / already_ran_today / fetch_article_text（抓正文） | 偶尔 |
 | `health_check.sh` | 检查 run.log，触发 auto_repair | 极少 |
-| `auto_repair.sh` | 两级自动修复代理 | 极少 |
+| `auto_repair.sh` | 两级自动修复代理（委托 bot_ops/auto_repair_base.sh） | 极少 |
+| `logs/report_draft.txt` | 当日 Claude 写好的稿子（send 读取后推送） | 每日写入 |
+| `logs/fetch_meta.json` | fetch 边车：日志摘要 + 指标（send 回填，供体检监控） | 每日写入 |
 | `logs/run.log` | 单行摘要日志（人类可读） | 每日写入 |
 | `logs/run.jsonl` | 结构化指标（程序可读） | 每日写入 |
 | `logs/launchd.log` | launchd 的 stdout/stderr | 每日写入 |
 | `logs/health_check.log` | health_check 运行日志 | 每日写入 |
 | `changelog.md` | 问题追踪，与 health_check 联动 | 按需 |
 | `pending_messages.json` | Telegram 发送缓存（降级保护） | 临时 |
-| `com.shirley.ai-daily-news-bot.plist.example` | 主脚本 launchd 配置模板（正式配置在 `~/Library/LaunchAgents/`，是端口/密钥的唯一权威源，`catchup.sh` 也读它） | 极少 |
-| `com.shirley.ai-daily-news-bot-health.plist` | health_check launchd 配置 | 极少 |
+| `com.shirley.ai-daily-news-bot.plist.example` | 主 plist 模板（正式配置在 `~/Library/LaunchAgents/`，是端口/密钥的唯一权威源，`claude_report.sh` 从中读环境变量） | 极少 |
+| `com.shirley.ai-daily-news-bot-health.plist` | health_check launchd 配置（11:00 触发） | 极少 |
 
 ---
 
@@ -76,7 +82,7 @@ RSS × 10 源 ──▶  build_ai_context()
 | 主流科技（5 条） | The Verge (AI) / TechCrunch / VentureBeat (AI) | 各 5 条 | 免费 RSS |
 | 主流科技（4 条） | Engadget | 4 条 | 免费 RSS |
 | 深度/垂直（3 条） | The Verge (Reviews) / Wired / MIT Tech Review / IEEE Spectrum / Ars Technica / The Decoder | 各 3 条 | 免费 RSS |
-| AI 模型 | DeepSeek | - | 用于分析与总结 |
+| 正文抓取 | 各新闻源文章页 | - | best-effort 抓正文（JSON-LD `articleBody` / `<p>` 启发式），失败回退 RSS 摘要，零依赖 |
 
 ### 日志格式（不得改动）
 ```
@@ -99,13 +105,13 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 
 ### 重试策略
 - Telegram：最多 3 次，指数退避（5 → 10 → 20s）
-- DeepSeek API：最多 2 次，指数退避（10 → 20s）
-- `OpenAI` 客户端的 `max_retries=0`，由外层装饰器统一控制
+- RSS 抓取（fetch_rss）：最多 2 次，退避 3 → 6s
+- 正文抓取（fetch_article_text）：best-effort、单次、失败即回退 RSS 摘要，不重试
 
 ### 消息缓存降级
-- AI 生成完成后立即写 `pending_messages.json`
+- send 模式发送前把稿子写入 `pending_messages.json`；代理不可用时也缓存
 - Telegram 发送成功后删除该文件
-- 下次启动时 `flush_pending()` 优先重发缓存消息
+- 缓存用于避免内容丢失（可人工恢复），当前 Claude 流程不做自动重发
 
 ---
 
@@ -138,8 +144,9 @@ cat changelog.md
 # 查看 launchd 原始输出
 tail -20 logs/launchd.log
 
-# 手动运行主脚本
-/opt/homebrew/bin/python3.11 daily_report.py
+# 手动抓取 / 发送（Claude 定时任务用同一封装）
+bash claude_report.sh fetch     # 抓取 + 抓正文，输出写稿素材
+bash claude_report.sh send      # 读取 logs/report_draft.txt 并推送
 
 # 手动运行健康检查
 bash health_check.sh

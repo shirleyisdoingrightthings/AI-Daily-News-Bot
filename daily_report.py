@@ -1,14 +1,14 @@
-#!/opt/homebrew/bin/python3.11
+#!/usr/bin/python3
 """
 AI 产业日报
-从多个 RSS 源抓取新闻，生成日报，发送到 Telegram。
+从多个 RSS 源抓取新闻（best-effort 抓正文全文，失败回退 RSS 摘要），
+由 Claude 写稿后发送到 Telegram。本脚本只负责抓取与发送，不含写稿用的第三方大模型 API。
 
-三种运行模式（--mode，默认 full 以保持向后兼容）：
-- full ：抓取 → DeepSeek 写稿 → 发送（无头兜底，launchd 使用，需 DEEPSEEK_API_KEY）
-- fetch：抓取 → 把新闻 context 打到 stdout（零 API 成本，供 Claude routine 读取写稿）
-- send ：读取稿子文件 → 发送 Telegram + 写日志（零 API 成本，供 Claude routine 发稿）
+两种运行模式（--mode，均零 API 成本）：
+- fetch：抓取 + 抓正文 → 把新闻 context 打到 stdout（供 Claude routine 读取写稿）
+- send ：读取 Claude 写好的稿子文件 → 清洗 HTML → 发送 Telegram + 写日志
 
-写稿规范统一存放于同目录 prompt.md，full 模式与 Claude routine 共用同一份。
+写稿规范存放于同目录 prompt.md，由 Claude routine 读取。
 """
 
 import os
@@ -21,7 +21,6 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from openai import OpenAI
 
 # 共享工具库
 sys.path.insert(0, str(Path.home() / "Desktop" / "bot_ops" / "shared"))
@@ -32,7 +31,6 @@ LOG_FILE    = Path(__file__).parent / "logs" / "run.log"
 JSONL_FILE  = Path(__file__).parent / "logs" / "run.jsonl"
 LOG_FILE.parent.mkdir(exist_ok=True)
 CACHE_FILE  = Path(__file__).parent / "pending_messages.json"
-PROMPT_FILE = Path(__file__).parent / "prompt.md"
 # Claude routine 把写好的稿子存到这里，再用 --mode send 发送
 DRAFT_FILE  = Path(__file__).parent / "logs" / "report_draft.txt"
 # fetch 模式写出、send 模式读回的边车：承载 OK 日志摘要与 health_check 所需 metrics
@@ -61,7 +59,6 @@ def write_log(status: str, message: str, metrics: dict = None) -> None:
 
 
 # ===== 配置（优先读取环境变量）=====
-DEEPSEEK_API_KEY   = os.getenv("DEEPSEEK_API_KEY",   "your_deepseek_api_key")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "your_telegram_bot_token")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "your_telegram_chat_id")
 
@@ -77,10 +74,6 @@ RSS_SOURCES = [
     ("https://feeds.arstechnica.com/arstechnica/technology-lab",           3),
     ("https://the-decoder.com/feed/",                                      3),
 ]
-
-def load_system_prompt() -> str:
-    """写稿规范单一权威源：full 模式与 Claude routine 共用 prompt.md。"""
-    return PROMPT_FILE.read_text(encoding="utf-8")
 
 # ===== P2: 消息缓存（降级策略）=====
 def save_pending(messages: list) -> None:
@@ -148,29 +141,6 @@ def build_ai_context(all_entries: list) -> str:
     return "\n".join(lines)
 
 
-# ===== P0: DeepSeek 生成日报（超时 + 重试）=====
-@with_retry(max_retries=2, base_delay=10, exceptions=(Exception,))
-def generate_report(ai_context: str) -> str:
-    client = OpenAI(
-        api_key=DEEPSEEK_API_KEY,
-        base_url="https://api.deepseek.com",
-        timeout=60.0,
-        max_retries=0,
-    )
-    today   = datetime.now().strftime("%Y-%m-%d")
-    user_msg = f"今天日期：{today}\n\n{ai_context}"
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": load_system_prompt()},
-            {"role": "user",   "content": user_msg},
-        ],
-        temperature=0.3,
-    )
-    report = response.choices[0].message.content
-    return sanitize_html(report)
-
-
 # ===== P0: 发送 Telegram（单块重试 + 整体分块）=====
 @with_retry(max_retries=3, base_delay=5, exceptions=(requests.RequestException,))
 def _send_one(chunk: str) -> None:
@@ -219,7 +189,7 @@ def send_telegram(text: str) -> None:
         _send_one(chunk)
 
 
-# ===== 抓取阶段（fetch / full 共用）=====
+# ===== 抓取阶段（fetch 模式用）=====
 def _proxy_ok() -> bool:
     """代理预检：无代理直接放行，有代理则快速验证可达。"""
     if not _PROXY:
@@ -308,7 +278,7 @@ def run_send(draft_path: Path) -> int:
         write_log("FAIL", f"稿子文件为空：{draft_path}")
         return 1
 
-    # 与 DeepSeek 路径同一套 HTML 白名单清洗，防止非法标签导致发送失败
+    # HTML 白名单清洗，防止非法标签导致 Telegram 发送失败
     report = sanitize_html(report)
 
     # 代理不可用时不丢内容：缓存下来，等代理恢复后补发
@@ -339,66 +309,11 @@ def run_send(draft_path: Path) -> int:
     return 0
 
 
-# ===== 模式 3：full — 抓取 → DeepSeek 写稿 → 发送（无头兜底，向后兼容）=====
-def run_full() -> None:
-    t0 = time.time()
-
-    # 防重复推送：今天已有 [OK] 记录则跳过（FORCE_RUN=1 可绕过）
-    if already_ran_today(LOG_FILE):
-        print("今天已成功运行过，跳过。如需强制执行请设置 FORCE_RUN=1。")
-        return
-
-    # P2: 优先重发上次未发送的缓存消息
-    if flush_pending():
-        duration = round(time.time() - t0, 1)
-        write_log("OK", "缓存重发完成（上次发送中断）", metrics={"duration_s": duration, "ai_calls": 0})
-        return
-
-    # 代理预检：失败立即退出
-    if not _proxy_ok():
-        write_log("WARN", f"代理不可用（{_PROXY}），跳过本次运行")
-        return
-
-    ai_context, rss_fetched, entry_count, zero_sources = fetch_news()
-
-    if not ai_context:
-        print("⚠️  过去 24 小时内无有效新闻，退出。")
-        write_log("WARN", "过去24小时无有效新闻，未发送")
-        return
-
-    print(f"  ✓ 保留 {entry_count} 条有效新闻")
-
-    print("\n🤖 调用 DeepSeek 生成日报...")
-    report = generate_report(ai_context)
-    print("  ✓ 日报生成完毕")
-
-    # P2: 先持久化缓存，防止 Telegram 失败时内容丢失
-    save_pending([report])
-
-    print("\n📨 发送到 Telegram...")
-    send_telegram(report)
-    print("  ✓ 发送成功\n")
-
-    # 发送成功后清除缓存
-    CACHE_FILE.unlink(missing_ok=True)
-
-    duration = round(time.time() - t0, 1)
-    write_log(
-        "OK",
-        f"抓取{rss_fetched}条 → 保留{entry_count}条 → Telegram发送成功",
-        metrics={
-            "rss_fetched": rss_fetched, "rss_kept": entry_count,
-            "rss_zero_sources": zero_sources,
-            "ai_calls": 1, "duration_s": duration,
-        },
-    )
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI 产业日报")
     parser.add_argument(
-        "--mode", choices=["full", "fetch", "send"], default="full",
-        help="full=DeepSeek全流程(默认,向后兼容) / fetch=只抓取输出context / send=只发送稿子",
+        "--mode", choices=["fetch", "send"], required=True,
+        help="fetch=抓取并输出 context（供 Claude 写稿，零 API）/ send=发送 Claude 写好的稿子",
     )
     parser.add_argument(
         "--file", type=Path, default=DRAFT_FILE,
@@ -409,10 +324,8 @@ if __name__ == "__main__":
     try:
         if parsed.mode == "fetch":
             sys.exit(run_fetch())
-        elif parsed.mode == "send":
-            sys.exit(run_send(parsed.file))
         else:
-            run_full()
+            sys.exit(run_send(parsed.file))
     except Exception:
         err = traceback.format_exc().strip().splitlines()[-1]
         write_log("FAIL", err)
