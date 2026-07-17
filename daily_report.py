@@ -18,13 +18,15 @@ import json
 import argparse
 import traceback
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from openai import OpenAI
 
 # 共享工具库
 sys.path.insert(0, str(Path.home() / "Desktop" / "bot_ops" / "shared"))
-from bot_utils import sanitize_html, with_retry, fetch_rss, parse_entry_date, already_ran_today
+from bot_utils import (sanitize_html, with_retry, fetch_rss, parse_entry_date,
+                       already_ran_today, fetch_article_text)
 
 LOG_FILE    = Path(__file__).parent / "logs" / "run.log"
 JSONL_FILE  = Path(__file__).parent / "logs" / "run.jsonl"
@@ -114,6 +116,7 @@ def build_ai_context(all_entries: list) -> str:
     seen_urls: set = set()
     lines: list = []
 
+    picked: list = []   # (title, url, url_lower, snippet)
     for entry in all_entries:
         title = getattr(entry, "title", None)
         if not title:
@@ -127,10 +130,20 @@ def build_ai_context(all_entries: list) -> str:
         if not pub_date or pub_date < time_limit:
             continue
         snippet = getattr(entry, "summary", "") or ""
-        lines.append(
-            f"[原始英文标题] {title}\n[链接] {original_url}\n"
-            f"[来源域名] {url_lower}\n[摘要] {snippet[:200]}\n----"
-        )
+        picked.append((title, original_url, url_lower, snippet))
+
+    # best-effort 并发抓正文全文；抓到用正文，失败/被墙/过短则回退 RSS 摘要。
+    # 全程零 API、纯 HTTP，抓不到不影响出稿。
+    def _material(item):
+        title, url, url_lower, snippet = item
+        body = fetch_article_text(url)          # "" 表示失败/过短
+        text = body if body else snippet[:500]
+        src  = "正文" if body else "摘要"
+        return f"[原始英文标题] {title}\n[链接] {url}\n[来源域名] {url_lower}\n[正文/摘要（{src}）] {text}\n----"
+
+    if picked:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            lines = list(ex.map(_material, picked))
 
     return "\n".join(lines)
 
