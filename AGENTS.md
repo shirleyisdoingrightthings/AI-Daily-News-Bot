@@ -26,26 +26,31 @@ RSS × 10 源 ──▶ daily_report.py --mode fetch
 ### 自动化调度
 
 ```
-09:53  Claude 定时任务（唯一写稿入口）
+08:30  Claude 定时任务（唯一写稿入口）
          claude_report.sh fetch → Claude 写稿 → claude_report.sh send
                        │
                   run.log [OK/FAIL]
 
-11:00  launchd → health_check.sh
+09:45  launchd → health_check.sh
                        │
-           ┌── [OK] ───┴── .ok_streak +1
+           ┌── [OK] ───┼── .ok_streak +1
            │                streak ≥ 3 → 删除 changelog 中 [x] 条目
            │
+           ├── [无记录] ── claude_catchup.sh 无头补跑（自动版 Run Now）
+           │                claude CLI 重走 fetch → 写稿 → send；同一天只补跑一次
+           │
            └── [FAIL] ─── changelog 新增 [ ] 条目
-                       └─▶ auto_repair.sh（后台触发）
+                       └─▶ auto_repair.sh（后台触发；先查当日稿件，缺稿直接转无头补跑）
                                  │
                          瞬时错误？
-                         ├─ Yes → 等 30s → 直接重跑
+                         ├─ Yes → 等 30s → 重跑 send
                          │         ├─ 成功 → changelog [x]
                          │         └─ 失败 → 升级
-                         └─ No  → claude CLI 分析修复 → 重跑
+                         └─ No  → claude CLI 分析修复 → 重跑 send
                                    ├─ 成功 → changelog [x]
-                                   └─ 失败 → macOS 通知 → 人工介入
+                                   └─ 失败 → claude_catchup.sh 无头补跑
+                                             ├─ 成功 → changelog [x]
+                                             └─ 失败 → macOS 通知 → 人工介入
 ```
 
 ---
@@ -57,19 +62,21 @@ RSS × 10 源 ──▶ daily_report.py --mode fetch
 | `daily_report.py` | 主脚本：`--mode fetch`（抓取+抓正文）/ `send`（清洗+推送），零第三方大模型 API | 偶尔 |
 | `claude_report.sh` | 供 Claude 定时任务调用的 fetch/send 封装（从 plist 加载环境变量） | 极少 |
 | `prompt.md` | 写稿规范（唯一权威源，Claude 依此写稿） | 偶尔 |
-| `~/Desktop/bot_ops/shared/bot_utils.py` | 共享工具库（两个 Bot 共用）：sanitize_html / with_retry / fetch_rss / parse_entry_date / already_ran_today / fetch_article_text（抓正文） | 偶尔 |
+| `~/bots/shared/bot_utils.py` | 共享工具库（两个 Bot 共用）：sanitize_html / with_retry / fetch_rss / parse_entry_date / already_ran_today / fetch_article_text（抓正文） | 偶尔 |
 | `health_check.sh` | 检查 run.log，触发 auto_repair | 极少 |
-| `auto_repair.sh` | 两级自动修复代理（委托 bot_ops/auto_repair_base.sh） | 极少 |
+| `auto_repair.sh` | 两级自动修复代理（委托 `~/bots/shared/auto_repair_base.sh`；重跑走 claude_report.sh send，先做当日稿件新鲜度检查） | 极少 |
+| `claude_catchup.sh` | 无头补跑薄包装（委托 `~/bots/shared/headless_catchup_base.sh`）：当天未出稿或自愈失败时由 claude CLI 完整重走流程；同一天只补跑一次（logs/.catchup_ran 戳记） | 极少 |
 | `logs/report_draft.txt` | 当日 Claude 写好的稿子（send 读取后推送） | 每日写入 |
 | `logs/fetch_meta.json` | fetch 边车：日志摘要 + 指标（send 回填，供体检监控） | 每日写入 |
 | `logs/run.log` | 单行摘要日志（人类可读） | 每日写入 |
 | `logs/run.jsonl` | 结构化指标（程序可读） | 每日写入 |
-| `logs/launchd.log` | launchd 的 stdout/stderr | 每日写入 |
+| `logs/launchd.log` | （历史）旧 09:15 launchd 兜底的 stdout/stderr，兜底已移除，不再写入 | 不再写入 |
 | `logs/health_check.log` | health_check 运行日志 | 每日写入 |
+| `logs/headless_catchup.log` | 无头补跑运行日志 | 触发时写入 |
 | `changelog.md` | 问题追踪，与 health_check 联动 | 按需 |
 | `pending_messages.json` | Telegram 发送缓存（降级保护） | 临时 |
-| `com.shirley.ai-daily-news-bot.plist.example` | 主 plist 模板（正式配置在 `~/Library/LaunchAgents/`，是端口/密钥的唯一权威源，`claude_report.sh` 从中读环境变量） | 极少 |
-| `com.shirley.ai-daily-news-bot-health.plist` | health_check launchd 配置（11:00 触发） | 极少 |
+| `com.shirley.ai-daily-news-bot.plist.example` | 环境变量 plist 模板（正式配置在 `~/Library/LaunchAgents/`，是端口/密钥的唯一权威源，`claude_report.sh` 从中读环境变量；不含调度，09:15 launchd 兜底已于 2026-07 移除，失败兜底由 health_check + auto_repair 承担） | 极少 |
+| `com.shirley.ai-daily-news-bot-health.plist` | health_check launchd 配置（09:45 触发） | 极少 |
 
 ---
 
@@ -100,7 +107,7 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 
 ### 代理
 - 固定走 `127.0.0.1:YOUR_PORT` (本地代理端口)
-- 端口在 `~/Library/LaunchAgents/com.shirley.ai-daily-news-bot.plist` 的 `HTTP_PROXY`/`HTTPS_PROXY` 里配置（唯一权威源）；改完 `launchctl unload && launchctl load` 重载
+- 端口在 `~/Library/LaunchAgents/com.shirley.ai-daily-news-bot.plist` 的 `HTTP_PROXY`/`HTTPS_PROXY` 里配置（唯一权威源）；改完即生效，`claude_report.sh` 每次运行时直接读文件，无需重载 launchd
 - `requests` 通过 `SESSION` 显式配置，`feedparser` 通过 `HTTP_PROXY` 环境变量
 
 ### 重试策略
@@ -140,9 +147,6 @@ tail -3 logs/run.jsonl | python3 -m json.tool
 
 # 查看当前问题清单
 cat changelog.md
-
-# 查看 launchd 原始输出
-tail -20 logs/launchd.log
 
 # 手动抓取 / 发送（Claude 定时任务用同一封装）
 bash claude_report.sh fetch     # 抓取 + 抓正文，输出写稿素材
