@@ -131,17 +131,17 @@ RSS × 9 源 ──▶ daily_report.py --mode fetch
 ## 文件结构
 
 ```
-~/bots/shared/bot_utils.py     # 外部共享工具库（含抓正文 fetch_article_text，与 Crypto Daily Bot 共用）
-~/bots/shared/auto_repair_base.sh         # 共享修复逻辑（与 Crypto Daily Bot 共用，2026-07 从 ~/Desktop/bot_ops/ 迁入并修复重跑缺陷）
-~/bots/shared/headless_catchup_base.sh    # 共享无头补跑逻辑（自动版 Run Now，与 Crypto Daily Bot 共用）
+~/Desktop/bots/shared/bot_utils.py     # 外部共享工具库（含抓正文 fetch_article_text，与 Crypto Daily Bot 共用）
+~/Desktop/bots/shared/auto_repair_base.sh         # 共享修复逻辑（与 Crypto Daily Bot 共用，2026-07 从 ~/Desktop/bot_ops/ 迁入并修复重跑缺陷）
+~/Desktop/bots/shared/headless_catchup_base.sh    # 共享无头补跑逻辑（自动版 Run Now，与 Crypto Daily Bot 共用）
 
 AI Daily News Bot/
 ├── daily_report.py                    # 主脚本：--mode fetch（抓取+抓正文）/ send（清洗+推送）
 ├── claude_report.sh                   # 供 Claude 定时任务调用的 fetch/send 封装（从 plist 加载环境变量）
 ├── prompt.md                          # 写稿规范（唯一权威源，Claude 依此写稿）
 ├── health_check.sh                    # 健康检查（失败时触发 auto_repair）
-├── auto_repair.sh                     # 薄包装：设置参数后委托 ~/bots/shared/auto_repair_base.sh
-├── claude_catchup.sh                  # 薄包装：无头补跑（委托 ~/bots/shared/headless_catchup_base.sh）
+├── auto_repair.sh                     # 薄包装：设置参数后委托 ~/Desktop/bots/shared/auto_repair_base.sh
+├── claude_catchup.sh                  # 薄包装：无头补跑（委托 ~/Desktop/bots/shared/headless_catchup_base.sh）
 ├── logs/                              # 所有日志与产物集中存放（运行时生成）
 │   ├── report_draft.txt              # 当日 Claude 写好的稿子（send 读取后推送）
 │   ├── fetch_meta.json               # fetch 边车：日志摘要 + 指标（send 回填，供体检监控）
@@ -184,7 +184,7 @@ AI Daily News Bot/
 
 **手动抓取 / 发送（测试）**
 ```bash
-cd ~/bots/AI\ Daily\ News\ Bot
+cd ~/Desktop/bots/AI\ Daily\ News\ Bot
 bash claude_report.sh fetch     # 抓取 + 抓正文，把写稿素材打到 stdout
 # （由 Claude 依 prompt.md 写稿并存入 logs/report_draft.txt）
 bash claude_report.sh send      # 读取 report_draft.txt，清洗 HTML 后推送 Telegram
