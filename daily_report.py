@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 from bot_utils import (sanitize_html, with_retry, fetch_rss, parse_entry_date,
                        already_ran_today, fetch_article_text,
                        url_key, load_sent_urls, record_sent_urls, extract_hrefs,
-                       is_ai_relevant, paginate_telegram, update_zero_streak)
+                       is_ai_relevant, paginate_telegram, update_zero_streak,
+                       resolve_proxy)
 
 LOG_FILE    = Path(__file__).parent / "logs" / "run.log"
 JSONL_FILE  = Path(__file__).parent / "logs" / "run.jsonl"
@@ -90,30 +91,13 @@ RSS_SOURCES = [
 ]
 
 # ===== P2: 消息缓存（降级策略）=====
+# 代理不可用或 Telegram 发送失败时把稿件存到 pending_messages.json，避免内容丢失。
+# 注意：**不做自动重发**——重发要判断"这稿子还是今天的吗"，跨天重发旧稿比丢一次
+# 更糟。当天补救由 health_check → claude_catchup 重走完整流程负责，缓存只作为
+# 人工恢复的兜底副本。（2026-08 删除了定义后从未被调用的 flush_pending。）
 def save_pending(messages: list) -> None:
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump({"ts": datetime.now().isoformat(), "messages": messages}, f, ensure_ascii=False)
-
-
-def flush_pending() -> bool:
-    """启动时检查并重发上次未发送的缓存消息"""
-    if not CACHE_FILE.exists():
-        return False
-    try:
-        data    = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-        pending = data.get("messages", [])
-        if not pending:
-            CACHE_FILE.unlink(missing_ok=True)
-            return False
-        print(f"[CACHE] 发现 {len(pending)} 条待发消息（来自 {data.get('ts','?')}），优先重发...")
-        for msg in pending:
-            send_telegram(msg)
-        CACHE_FILE.unlink(missing_ok=True)
-        print("[CACHE] 缓存消息重发成功")
-        return True
-    except Exception as e:
-        print(f"[WARN] 缓存重发失败: {e}", file=sys.stderr)
-        return False
 
 
 # ===== 整理新闻数据 =====
@@ -203,14 +187,22 @@ def send_telegram(text: str) -> None:
 
 # ===== 抓取阶段（fetch 模式用）=====
 def _proxy_ok() -> bool:
-    """代理预检：无代理直接放行，有代理则快速验证可达。"""
-    if not _PROXY:
-        return True
-    try:
-        SESSION.get("https://www.gstatic.com/generate_204", timeout=5)
-        return True
-    except Exception:
-        return False
+    """代理预检 + 端口自愈。
+
+    配置端口不通时会探测候选端口（见 bot_utils.PROXY_CANDIDATES），命中则
+    就地切换本进程的 SESSION 与环境变量——换代理软件导致端口变化时不再
+    静默停摆。无代理配置直接放行（视为直连）。"""
+    global _PROXY
+    resolved, switched = resolve_proxy(_PROXY)
+    if resolved is None:
+        return not _PROXY          # 本来就没配代理 → 直连放行；配了但全不通 → 失败
+    if switched:
+        _PROXY = resolved
+        SESSION.proxies = {"http": resolved, "https": resolved}
+        # feedparser 走 urllib，必须同步环境变量（用赋值而非 setdefault）
+        os.environ["HTTP_PROXY"] = resolved
+        os.environ["HTTPS_PROXY"] = resolved
+    return True
 
 
 def fetch_news() -> tuple:
