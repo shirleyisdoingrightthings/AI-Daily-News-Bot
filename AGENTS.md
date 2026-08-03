@@ -62,7 +62,7 @@ RSS × 10 源 ──▶ daily_report.py --mode fetch
 | `daily_report.py` | 主脚本：`--mode fetch`（抓取+抓正文）/ `send`（清洗+推送），零第三方大模型 API | 偶尔 |
 | `claude_report.sh` | 供 Claude 定时任务调用的 fetch/send 封装（从 plist 加载环境变量） | 极少 |
 | `prompt.md` | 写稿规范（唯一权威源，Claude 依此写稿） | 偶尔 |
-| `~/Desktop/bots/shared/bot_utils.py` | 共享工具库（两个 Bot 共用）：sanitize_html / with_retry / fetch_rss / parse_entry_date / already_ran_today / fetch_article_text（抓正文） | 偶尔 |
+| `~/Desktop/bots/shared/bot_utils.py` | 共享工具库（三个 bot 共用）：基础工具 + 抓正文 + 跨天去重 + 相关性闸门 + 分页页码 + 代理自愈 + 零产监测，完整清单见文件头 | 偶尔 |
 | `health_check.sh` | 检查 run.log，触发 auto_repair | 极少 |
 | `auto_repair.sh` | 两级自动修复代理（委托 `~/Desktop/bots/shared/auto_repair_base.sh`；重跑走 claude_report.sh send，先做当日稿件新鲜度检查） | 极少 |
 | `claude_catchup.sh` | 无头补跑薄包装（委托 `~/Desktop/bots/shared/headless_catchup_base.sh`）：当天未出稿或自愈失败时由 claude CLI 完整重走流程；同一天只补跑一次（logs/.catchup_ran 戳记） | 极少 |

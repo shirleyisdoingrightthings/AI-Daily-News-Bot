@@ -178,7 +178,7 @@ def _send_one(chunk: str) -> None:
 
 
 def send_telegram(text: str) -> None:
-    # 切分 + 页码统一在 bot_utils.paginate_telegram 里做（两个 bot 共用同一实现）。
+    # 切分 + 页码统一在 bot_utils.paginate_telegram 里做（三个 bot 共用同一实现）。
     # 调用方已完成 sanitize_html，故页码的 <b> 标签不会被转义。
     chunks = paginate_telegram(text)
     for chunk in chunks:

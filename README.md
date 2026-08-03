@@ -131,9 +131,9 @@ RSS × 9 源 ──▶ daily_report.py --mode fetch
 ## 文件结构
 
 ```
-~/Desktop/bots/shared/bot_utils.py     # 外部共享工具库（含抓正文 fetch_article_text，与 Crypto Daily Bot 共用）
-~/Desktop/bots/shared/auto_repair_base.sh         # 共享修复逻辑（与 Crypto Daily Bot 共用，2026-07 从 ~/Desktop/bot_ops/ 迁入并修复重跑缺陷）
-~/Desktop/bots/shared/headless_catchup_base.sh    # 共享无头补跑逻辑（自动版 Run Now，与 Crypto Daily Bot 共用）
+~/Desktop/bots/shared/bot_utils.py     # 外部共享工具库（含抓正文 fetch_article_text，三个 bot 共用）
+~/Desktop/bots/shared/auto_repair_base.sh         # 共享修复逻辑（三个 bot 共用）
+~/Desktop/bots/shared/headless_catchup_base.sh    # 共享无头补跑逻辑（自动版 Run Now，三个 bot 共用）
 
 AI Daily News Bot/
 ├── daily_report.py                    # 主脚本：--mode fetch（抓取+抓正文）/ send（清洗+推送）
