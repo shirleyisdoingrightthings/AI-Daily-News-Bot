@@ -78,13 +78,11 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "your_telegram_chat_id")
 RSS_SOURCES = [
     ("https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",    5, False),
     ("https://techcrunch.com/category/artificial-intelligence/feed/",        5, False),
-    ("https://venturebeat.com/category/ai/feed/",                            5, False),
     ("https://www.wired.com/feed/tag/ai/latest/rss",                         3, False),
     ("https://www.technologyreview.com/topic/artificial-intelligence/feed/", 3, False),
     ("https://spectrum.ieee.org/feeds/topic/robotics.rss",                   3, False),
     ("https://the-decoder.com/feed/",                                        3, False),
     # 泛科技源：抓取额度放宽，靠相关性闸门收敛（原额度会被非 AI 条目吃掉）
-    ("https://feeds.arstechnica.com/arstechnica/technology-lab",             3, True),
     ("https://www.engadget.com/rss.xml",                                     8, True),
 ]
 
