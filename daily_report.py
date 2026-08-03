@@ -80,8 +80,11 @@ RSS_SOURCES = [
     ("https://techcrunch.com/category/artificial-intelligence/feed/",        5, False),
     ("https://www.wired.com/feed/tag/ai/latest/rss",                         3, False),
     ("https://www.technologyreview.com/topic/artificial-intelligence/feed/", 3, False),
-    ("https://spectrum.ieee.org/feeds/topic/robotics.rss",                   3, False),
     ("https://the-decoder.com/feed/",                                        3, False),
+    ("https://arstechnica.com/ai/feed/",                                     4, False),
+    # 一手信源：官方博客，模型发布与政策表态的原始出处，二手媒体常漏掉细节
+    ("https://openai.com/blog/rss.xml",                                      3, False),
+    ("https://deepmind.google/blog/rss.xml",                                 3, False),
     # 泛科技源：抓取额度放宽，靠相关性闸门收敛（原额度会被非 AI 条目吃掉）
     ("https://www.engadget.com/rss.xml",                                     8, True),
 ]
