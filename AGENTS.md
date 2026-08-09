@@ -77,6 +77,7 @@ logs/archive/ 最近 6 天稿件 ─┐
 | `prompt.md` | 当日日报的写稿规范（唯一权威源，Claude 依此写稿） | 偶尔 |
 | `prompt_weekly.md` | 周日《AI 产业周回顾》的写稿规范（跨天合并 + 按周重新评分 + 主题分组） | 偶尔 |
 | `~/Desktop/bots/shared/bot_utils.py` | 共享工具库（三个 bot 共用）：基础工具 + 抓正文 + 跨天去重 + 相关性闸门 + 分页页码 + 代理自愈 + 零产监测，完整清单见文件头 | 偶尔 |
+| `~/Desktop/bots/shared/scheduled-tasks/` | 10:00 定时任务 prompt 的版本化备份（原件在 `~/.claude/scheduled-tasks/`，跨三个 bot，故放共享层而非本仓库）。改完 routine 记得同步回去 | 偶尔 |
 | `health_check.sh` | 检查 run.log，触发 auto_repair | 极少 |
 | `auto_repair.sh` | 两级自动修复代理（委托 `~/Desktop/bots/shared/auto_repair_base.sh`；重跑走 claude_report.sh send，先做当日稿件新鲜度检查） | 极少 |
 | `claude_catchup.sh` | 无头补跑薄包装（委托 `~/Desktop/bots/shared/headless_catchup_base.sh`）：当天未出稿或自愈失败时由 claude CLI 完整重走流程；同一天只补跑一次（logs/.catchup_ran 戳记） | 极少 |
