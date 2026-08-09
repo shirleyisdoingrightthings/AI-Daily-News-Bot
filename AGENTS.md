@@ -9,6 +9,8 @@
 
 这是一个 **AI 产业日报系统**。每早由本地 Claude 定时任务触发：`daily_report.py --mode fetch` 抓取资讯（best-effort 抓正文全文，失败回退 RSS 摘要）→ Claude 按 `prompt.md` 写稿 → `daily_report.py --mode send` 推送 Telegram。脚本本身只做抓取与发送，零第三方大模型 API、零 token 成本。
 
+**周日出的是《AI 产业周回顾》而非当日日报**，素材取本周稿件存档，写稿规范换成 `prompt_weekly.md`，详见下方「周日周回顾」一节。
+
 ### 数据流
 
 ```
@@ -21,6 +23,17 @@ RSS × 10 源 ──▶ daily_report.py --mode fetch
  The Decoder）              Claude 按 prompt.md 写稿 → logs/report_draft.txt
                                    ▼
                             daily_report.py --mode send ──▶ Telegram（AI 产业日报）
+                                   │
+                                   └─▶ logs/archive/YYYY-MM-DD.txt（存档，供周回顾取材）
+
+周日（北京时间）：
+logs/archive/ 最近 6 天稿件 ─┐
+                             ├─▶ fetch 输出 === WEEKLY_OK ===
+最近 24h 新增（照常抓）      ─┘         │
+                                        ▼
+                       Claude 按 prompt_weekly.md 写稿 → 同一个 report_draft.txt
+                                        ▼
+                             --mode send ──▶ Telegram（AI 产业周回顾）
 ```
 
 ### 自动化调度
@@ -61,12 +74,14 @@ RSS × 10 源 ──▶ daily_report.py --mode fetch
 |------|------|---------|
 | `daily_report.py` | 主脚本：`--mode fetch`（抓取+抓正文）/ `send`（清洗+推送），零第三方大模型 API | 偶尔 |
 | `claude_report.sh` | 供 Claude 定时任务调用的 fetch/send 封装（从 plist 加载环境变量） | 极少 |
-| `prompt.md` | 写稿规范（唯一权威源，Claude 依此写稿） | 偶尔 |
+| `prompt.md` | 当日日报的写稿规范（唯一权威源，Claude 依此写稿） | 偶尔 |
+| `prompt_weekly.md` | 周日《AI 产业周回顾》的写稿规范（跨天合并 + 按周重新评分 + 主题分组） | 偶尔 |
 | `~/Desktop/bots/shared/bot_utils.py` | 共享工具库（三个 bot 共用）：基础工具 + 抓正文 + 跨天去重 + 相关性闸门 + 分页页码 + 代理自愈 + 零产监测，完整清单见文件头 | 偶尔 |
 | `health_check.sh` | 检查 run.log，触发 auto_repair | 极少 |
 | `auto_repair.sh` | 两级自动修复代理（委托 `~/Desktop/bots/shared/auto_repair_base.sh`；重跑走 claude_report.sh send，先做当日稿件新鲜度检查） | 极少 |
 | `claude_catchup.sh` | 无头补跑薄包装（委托 `~/Desktop/bots/shared/headless_catchup_base.sh`）：当天未出稿或自愈失败时由 claude CLI 完整重走流程；同一天只补跑一次（logs/.catchup_ran 戳记） | 极少 |
-| `logs/report_draft.txt` | 当日 Claude 写好的稿子（send 读取后推送） | 每日写入 |
+| `logs/report_draft.txt` | 当日 Claude 写好的稿子（send 读取后推送；日报与周回顾共用此文件） | 每日写入 |
+| `logs/archive/YYYY-MM-DD.txt` | 已推送稿件按日存档，保留 14 天，周回顾的唯一素材来源 | 每日写入 |
 | `logs/fetch_meta.json` | fetch 边车：日志摘要 + 指标（send 回填，供体检监控） | 每日写入 |
 | `logs/run.log` | 单行摘要日志（人类可读） | 每日写入 |
 | `logs/run.jsonl` | 结构化指标（程序可读） | 每日写入 |
@@ -113,7 +128,22 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 - 收到告警即可把该源从脚本的 `RSS_SOURCES` 移除或更换；源一旦恢复产出，计数自动清零并移出档案
 
 ### 新闻时效
-- AI Daily News Bot 收录 **24 小时内**新闻（`timedelta(days=1)`）
+- AI Daily News Bot 默认收录 **24 小时内**新闻（`DEFAULT_WINDOW_H = 24`）
+- 时效窗**按源可调**：`RSS_SOURCES` 的元组第 4 位是该源的窗口小时数，省略即用默认值。给周更/深度稿节奏的源单独放宽，不要全局放宽
+- 放宽上限受 `sent_urls` 的 **7 天**保留期约束；窗口超过 7 天，旧条目会脱离跨天去重的覆盖范围而重复入选
+- 现有例外：`newsletter.semianalysis.com` = 120h（2026-08-07 起，每周 2-3 篇的深度稿节奏）
+- 已淘汰：`www.technologyreview.com`（72h 窗口下仍连续 3 天零产，2026-08-07 换成 SemiAnalysis）；
+  SemiAnalysis 只能用 `newsletter.semianalysis.com/feed`，主站 `semianalysis.com/feed/` 停更在 2025-09，是死源
+
+### 周日周回顾
+- **北京时间周日不出当日日报，改出《AI 产业周回顾》**。机器时区就是 `Asia/Shanghai`，脚本用 `datetime.now().weekday() == 6` 判定，无需额外时区换算
+- 判定在 `daily_report.py` 里做，**不要挪到 routine 的 prompt 里**：`claude_report.sh fetch` 仍是唯一入口，脚本用 stdout 标记告诉 Claude 今天出哪种稿（`=== FETCH_OK ===` = 日报 / `=== WEEKLY_OK ===` = 周回顾），模型不负责算星期几
+- **素材必须来自 `logs/archive/`，不能靠周日重抓**：RSS feed 只保留最近几十条，周一的新闻到周日早已滚出 feed；且这些链接都在 `sent_urls` 去重档案里，重抓也会被挡下
+- 回看窗口 `WEEKLY_LOOKBACK_DAYS = 6`（周一到周六，不含当天）。刻意不取 7 天——取 7 会把上周日的回顾稿本身卷进新回顾里
+- 周日仍照常抓最近 24h 并把新增条目并进回顾。周六 10:00 到周日 10:00 这段新闻不在任何一天的存档里，不抓就永远没人播；send 后照常写 `sent_urls`，去重闭环不断
+- 存档不足 `WEEKLY_MIN_ARCHIVES = 3` 份时**自动退回当日日报**（刚上线的头几天、长时间没开机），stderr 会说明原因
+- 周回顾复用同一个 `report_draft.txt`、同一个 send 流程、同一套 `run.log` `[OK]` 格式，因此 `health_check.sh` / `auto_repair.sh` 完全不需要改
+- `FORCE_WEEKLY=1 bash claude_report.sh fetch` 可在非周日预览周回顾流程（只抓取不发送）
 
 ### 代理
 - 固定走 `127.0.0.1:YOUR_PORT` (本地代理端口)
@@ -143,6 +173,8 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 | 修改 `with_retry` 的 exceptions 参数 | 会影响重试覆盖范围 |
 | 替换核心 RSS 源 | 确保数据抓取的广度与质量 |
 | 修改 `daily_report.py` 的 HTML 清洗逻辑 | 防止 Telegram 消息推送由于标签不规范而失败 |
+| 删除 `archive_draft()` 调用 | 存档断一天，下个周日的周回顾就少一天素材且无法补回 |
+| 把 `WEEKLY_LOOKBACK_DAYS` 改成 7 | 会把上周日的回顾稿卷进本周回顾，造成回顾套回顾 |
 
 ---
 
@@ -159,8 +191,14 @@ tail -3 logs/run.jsonl | python3 -m json.tool
 cat changelog.md
 
 # 手动抓取 / 发送（Claude 定时任务用同一封装）
-bash claude_report.sh fetch     # 抓取 + 抓正文，输出写稿素材
+bash claude_report.sh fetch     # 抓取 + 抓正文，输出写稿素材（周日自动改出周回顾素材）
 bash claude_report.sh send      # 读取 logs/report_draft.txt 并推送
+
+# 非周日预览周回顾流程（只抓取，不发送）
+FORCE_WEEKLY=1 bash claude_report.sh fetch
+
+# 查看稿件存档（周回顾的素材）
+ls logs/archive/
 
 # 手动运行健康检查
 bash health_check.sh

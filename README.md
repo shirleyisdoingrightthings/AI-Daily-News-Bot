@@ -6,14 +6,16 @@
 
 ## 核心特性
 
-**数据来源 — 9 家媒体，覆盖主流到学术**
+**数据来源 — 7 家媒体，覆盖主流到学术**
 
 | 类型 | 媒体 | 闸门 |
 |------|------|------|
-| AI 垂直频道 | The Verge (AI) · TechCrunch (AI) · VentureBeat (AI) · Wired (AI) · MIT Tech Review (AI 主题) · IEEE Spectrum (机器人) · The Decoder | 直接放行 |
-| 泛科技全站源 | Engadget · Ars Technica | 过 AI 相关性闸门 |
+| AI 垂直频道 | The Verge (AI) · TechCrunch (AI) · Wired (AI) · MIT Tech Review (AI 主题) · The Decoder · Ars Technica (AI) | 直接放行 |
+| 泛科技全站源 | Engadget | 过 AI 相关性闸门 |
 
-每日抓取约 38 条原始内容，经"跨天去重 → 24h 时间窗 → 相关性闸门"三层过滤后进入写稿素材。
+不收厂商官方博客（OpenAI / Google / DeepMind 等）——发文稀疏、软文占比高，重要官宣当天必被上述垂直源覆盖。
+
+每日抓取约 31 条原始内容，经"跨天去重 → 时效窗 → 相关性闸门"三层过滤后进入写稿素材。时效窗默认 24h，个别发文慢的源单独放宽（当前 MIT Tech Review 为 72h）。
 
 > 泛科技源里大量条目与 AI 无关（游戏机 demo、Steam 功能更新、影视并购），实测约
 > 30% 的抓取额度被这类内容占掉。故对它们单独加一道 `is_ai_relevant` 闸门，而 AI
@@ -37,6 +39,7 @@
 - **速览**：开头固定 5 条，每条带星级 + 至少一个具体数字，与正文前 5 条一一对应——只看速览就能掌握当天要点
 - **产业动态**：每条为「加粗超链接标题（点标题直达原文）+ 📄 The Details（逐条具体事实，句句自足）」
 - **超长自动分页**：超过 Telegram 单条 4096 上限时按段落边界切分，每条顶部标 `（n/N）` 页码，条目不会被腰斩
+- **周日出周回顾**：北京时间周日不发当日日报，改发《AI 产业周回顾》——以本周每天已推送稿件的存档为素材，跨天合并同一线索、按一周尺度重新评分（只留 4 分以上）、按主题分组，另附「本周数字」。周日仍照常抓最近 24h 并入回顾，周末的新闻不会漏掉
 
 **稳定性 — 出了问题自己修**
 
@@ -64,11 +67,11 @@
 
 ```
 [数据源]                          [抓取 / 写稿]                     [输出]
-RSS × 9 源 ──▶ daily_report.py --mode fetch
-（7 个 AI 垂直频道 +               │  build_ai_context()
-  2 个泛科技全站源）               │  ├─ URL 去重（单次运行内）
+RSS × 7 源 ──▶ daily_report.py --mode fetch
+（6 个 AI 垂直频道 +               │  build_ai_context()
+  1 个泛科技全站源）               │  ├─ URL 去重（单次运行内）
                                    │  ├─ 跨天去重（排除 logs/sent_urls.json）
-                                   │  ├─ 24h 时间窗
+                                   │  ├─ 时效窗（默认 24h，按源可调）
                                    │  ├─ AI 相关性闸门（仅泛科技源）
                                    │  ├─ 并发 best-effort 抓正文全文
                                    │  └─ 抓不到 → 回退 RSS 摘要
@@ -138,12 +141,14 @@ RSS × 9 源 ──▶ daily_report.py --mode fetch
 AI Daily News Bot/
 ├── daily_report.py                    # 主脚本：--mode fetch（抓取+抓正文）/ send（清洗+推送）
 ├── claude_report.sh                   # 供 Claude 定时任务调用的 fetch/send 封装（从 plist 加载环境变量）
-├── prompt.md                          # 写稿规范（唯一权威源，Claude 依此写稿）
+├── prompt.md                          # 当日日报的写稿规范（唯一权威源，Claude 依此写稿）
+├── prompt_weekly.md                   # 周日《AI 产业周回顾》的写稿规范
 ├── health_check.sh                    # 健康检查（失败时触发 auto_repair）
 ├── auto_repair.sh                     # 薄包装：设置参数后委托 ~/Desktop/bots/shared/auto_repair_base.sh
 ├── claude_catchup.sh                  # 薄包装：无头补跑（委托 ~/Desktop/bots/shared/headless_catchup_base.sh）
 ├── logs/                              # 所有日志与产物集中存放（运行时生成）
-│   ├── report_draft.txt              # 当日 Claude 写好的稿子（send 读取后推送）
+│   ├── report_draft.txt              # 当日 Claude 写好的稿子（send 读取后推送；日报与周回顾共用）
+│   ├── archive/YYYY-MM-DD.txt        # 已推送稿件按日存档（保留 14 天），周回顾的素材来源
 │   ├── fetch_meta.json               # fetch 边车：日志摘要 + 指标（send 回填，供体检监控）
 │   ├── run.log                        # 单行摘要日志（人类可读）
 │   ├── run.jsonl                      # 结构化指标日志（程序可读，含分源 fetched/kept 统计）

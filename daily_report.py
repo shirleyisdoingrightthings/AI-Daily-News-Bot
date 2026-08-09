@@ -8,7 +8,11 @@ AI 产业日报
 - fetch：抓取 + 抓正文 → 把新闻 context 打到 stdout（供 Claude routine 读取写稿）
 - send ：读取 Claude 写好的稿子文件 → 清洗 HTML → 发送 Telegram + 写日志
 
-写稿规范存放于同目录 prompt.md，由 Claude routine 读取。
+北京时间周日 fetch 不出当日日报，改出《AI 产业周回顾》：素材是本周每天已推送稿件的
+存档（logs/archive/）+ 最近 24 小时新增，stdout 标记为 === WEEKLY_OK ===。
+两种稿子共用同一个 send 流程与 run.log 格式，health_check / auto_repair 无需改动。
+
+写稿规范存放于同目录 prompt.md（日报）与 prompt_weekly.md（周回顾），由 Claude routine 读取。
 """
 
 import os
@@ -46,6 +50,17 @@ SENT_URLS   = Path(__file__).parent / "logs" / "sent_urls.json"
 ZERO_STREAK = Path(__file__).parent / "logs" / ".zero_streak.json"
 # 连续零产多少天就判定该源可以移除
 ZERO_STREAK_THRESHOLD = 3
+# 当日稿件存档目录：send 成功后按日期归档，供周日的「本周回顾」取材
+ARCHIVE_DIR = Path(__file__).parent / "logs" / "archive"
+# 存档保留天数（周回顾只回看 6 天，多留几天方便人工排查）
+ARCHIVE_KEEP_DAYS = 14
+# 周回顾回看天数：6 = 周一到周六，不含今天（周日），也就不会把上周日的回顾稿卷进来
+WEEKLY_LOOKBACK_DAYS = 6
+# 存档少于这个份数就不出回顾，退回当日日报（刚上线的头几天、长时间没开机时）
+WEEKLY_MIN_ARCHIVES = 3
+# 默认时效窗口（小时）。个别发文节奏慢的源可在 RSS_SOURCES 里单独放宽，
+# 上限受 sent_urls 的 7 天保留期约束——超过 7 天的窗口会让旧条目重新入选。
+DEFAULT_WINDOW_H = 24
 
 # ===== P0: 显式代理配置 =====
 _PROXY = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
@@ -73,19 +88,26 @@ def write_log(status: str, message: str, metrics: dict = None) -> None:
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "your_telegram_bot_token")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "your_telegram_chat_id")
 
-# (feed_url, limit, is_general)
+# (feed_url, limit, is_general[, window_h])
 # is_general=True 表示这是泛科技源而非 AI 垂直源，条目要过 is_ai_relevant 闸门。
 # 垂直源不过闸，避免误伤标题里不含关键词的正当 AI 选题。
+# window_h 可选，缺省用 DEFAULT_WINDOW_H；只给发文慢的源单独放宽。
 RSS_SOURCES = [
     ("https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",    5, False),
     ("https://techcrunch.com/category/artificial-intelligence/feed/",        5, False),
     ("https://www.wired.com/feed/tag/ai/latest/rss",                         3, False),
-    ("https://www.technologyreview.com/topic/artificial-intelligence/feed/", 3, False),
+    # 2026-08-07：MIT Tech Review 放宽到 72h 后仍连续 3 天零产（抓得到，但条条被
+    # 去重/时效/相关性挡下），换成 SemiAnalysis。
+    # 注意用 newsletter 子域的 feed：主站 semianalysis.com/feed/ 最新一篇停在
+    # 2025-09-16，已随内容迁移变成死源，抓了也永远零产。
+    # SemiAnalysis 是每周 2-3 篇的算力/半导体深度稿节奏，24h 窗口必然天天零产，
+    # 故给 120h（仍在 sent_urls 7 天保留期内，同一篇不会重复入选）。
+    ("https://newsletter.semianalysis.com/feed",                             3, False, 120),
     ("https://the-decoder.com/feed/",                                        3, False),
     ("https://arstechnica.com/ai/feed/",                                     4, False),
-    # 一手信源：官方博客，模型发布与政策表态的原始出处，二手媒体常漏掉细节
-    ("https://openai.com/blog/rss.xml",                                      3, False),
-    ("https://deepmind.google/blog/rss.xml",                                 3, False),
+    # 2026-08-06：移除全部厂商官方博客（openai.com/blog、blog.google/technology/ai，
+    # 更早还有 deepmind.google）。这类源发文稀疏、软文占比高，长期零产；真正重要的
+    # 官宣一定会被上面的垂直媒体源当天覆盖，留着只是白占抓取额度。不要再加回来。
     # 泛科技源：抓取额度放宽，靠相关性闸门收敛（原额度会被非 AI 条目吃掉）
     ("https://www.engadget.com/rss.xml",                                     8, True),
 ]
@@ -100,14 +122,57 @@ def save_pending(messages: list) -> None:
         json.dump({"ts": datetime.now().isoformat(), "messages": messages}, f, ensure_ascii=False)
 
 
+# ===== 稿件存档（周日「本周回顾」的素材来源）=====
+def archive_draft(report: str) -> None:
+    """把刚推送成功的稿子按日期归档，并清掉过期存档。
+
+    周回顾必须靠存档，不能靠周日重新抓：RSS feed 只保留最近几十条，周一的新闻
+    到周日早已滚出 feed；且这些链接都在 sent_urls 的跨天去重档案里，重抓也会被挡。
+    存档里的稿子已经筛过、写好、带链接，是唯一稳妥的素材来源。
+    归档只是锦上添花，失败绝不能影响已经成功的推送，故整体 try 住。"""
+    try:
+        ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        today = datetime.now().strftime("%Y-%m-%d")
+        (ARCHIVE_DIR / f"{today}.txt").write_text(report, encoding="utf-8")
+        cutoff = datetime.now() - timedelta(days=ARCHIVE_KEEP_DAYS)
+        for f in ARCHIVE_DIR.glob("*.txt"):
+            try:
+                if datetime.strptime(f.stem, "%Y-%m-%d") < cutoff:
+                    f.unlink()
+            except ValueError:
+                continue        # 文件名不是日期格式，不归本函数管，留着
+        print(f"  ✓ 稿件已归档 logs/archive/{today}.txt", file=sys.stderr)
+    except Exception as e:
+        print(f"  ⚠️ 稿件归档失败（不影响本次推送）：{e}", file=sys.stderr)
+
+
+def load_week_archives(days: int = WEEKLY_LOOKBACK_DAYS) -> list:
+    """读最近 days 天（不含今天）的存档，按日期从旧到新返回 [(日期, 稿件正文)]。
+
+    缺哪天跳哪天——某天没出稿不该让整个周回顾停摆。"""
+    today = datetime.now().date()
+    out = []
+    for i in range(days, 0, -1):
+        day  = today - timedelta(days=i)
+        path = ARCHIVE_DIR / f"{day.isoformat()}.txt"
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if text:
+            out.append((day.isoformat(), text))
+    return out
+
+
 # ===== 整理新闻数据 =====
 def build_ai_context(all_entries: list) -> tuple:
     """整理素材，返回 (context, kept_per_source, drop_stats)。
 
     过滤顺序：标题/URL 缺失 → 单次运行内 URL 去重 → 跨天已播去重 →
-    24h 时间窗 → 泛科技源的 AI 相关性闸门。"""
-    now        = datetime.now(timezone.utc)
-    time_limit = now - timedelta(days=1)
+    时间窗（按源，见 RSS_SOURCES 的 window_h）→ 泛科技源的 AI 相关性闸门。"""
+    now = datetime.now(timezone.utc)
     seen_urls: set = set()
     sent_before    = load_sent_urls(SENT_URLS)
     lines: list = []
@@ -130,8 +195,10 @@ def build_ai_context(all_entries: list) -> tuple:
         if url_key(original_url) in sent_before:
             drops["already_sent"] += 1
             continue
+        # 时间窗按源取，缺省 24h；放宽的源靠上面的跨天去重兜住重复
+        window_h = getattr(entry, "__window_h", DEFAULT_WINDOW_H)
         pub_date = parse_entry_date(entry)
-        if not pub_date or pub_date < time_limit:
+        if not pub_date or pub_date < now - timedelta(hours=window_h):
             drops["stale"] += 1
             continue
         snippet = getattr(entry, "summary", "") or ""
@@ -211,16 +278,20 @@ def fetch_news() -> tuple:
     print("📡 抓取 RSS 源...", file=sys.stderr)
     all_entries = []
     fetched_counts: dict = {}
-    for feed_url, limit, is_general in RSS_SOURCES:
+    for src in RSS_SOURCES:
+        feed_url, limit, is_general = src[:3]
+        window_h = src[3] if len(src) > 3 else DEFAULT_WINDOW_H
         entries = fetch_rss(feed_url, limit)
         domain  = feed_url.split("/")[2]
         # 给条目打上来源标记，供后续统计"过滤后每个源还剩几条"与相关性闸门判定
         for e in entries:
-            e["__src"]     = domain
-            e["__general"] = is_general
+            e["__src"]      = domain
+            e["__general"]  = is_general
+            e["__window_h"] = window_h
         all_entries.extend(entries)
         fetched_counts[domain] = fetched_counts.get(domain, 0) + len(entries)
-        print(f"  ✓ {len(entries)} 条  {feed_url}", file=sys.stderr)
+        note = "" if window_h == DEFAULT_WINDOW_H else f"（窗口 {window_h}h）"
+        print(f"  ✓ {len(entries)} 条  {feed_url}{note}", file=sys.stderr)
 
     print(f"\n📰 共抓取 {len(all_entries)} 条，整理过滤中...", file=sys.stderr)
     ai_context, kept_per_source, drops = build_ai_context(all_entries)
@@ -238,7 +309,7 @@ def fetch_news() -> tuple:
                                        threshold=ZERO_STREAK_THRESHOLD)
 
     print(f"   过滤明细：重复 {drops['dup']} · 已播过 {drops['already_sent']} · "
-          f"超 24h {drops['stale']} · 非 AI {drops['off_topic']} → 保留 {entry_count}",
+          f"超时效窗 {drops['stale']} · 非 AI {drops['off_topic']} → 保留 {entry_count}",
           file=sys.stderr)
     streak_now = _load_streak()
     for d, s in sorted(source_stats.items(), key=lambda kv: -kv[1]["kept"]):
@@ -268,21 +339,38 @@ def run_fetch() -> int:
         print(f"=== SKIP_PROXY === {_PROXY}")
         return 0
 
+    # 周日改出《AI 产业周回顾》：素材以本周已播稿件的存档为主。
+    # 但仍照常抓最近 24h——周六 10:00 到周日 10:00 这段新闻不在任何一天的存档里，
+    # 不抓就永远没人播；抓来并进回顾，send 后照常写 sent_urls 完成去重闭环。
+    # FORCE_WEEKLY=1 可在非周日强制预览回顾流程。
+    is_sunday = datetime.now().weekday() == 6 or os.getenv("FORCE_WEEKLY") == "1"
+    archives   = load_week_archives() if is_sunday else []
+    weekly     = len(archives) >= WEEKLY_MIN_ARCHIVES
+    if is_sunday and not weekly:
+        print(f"ℹ️ 今天是周日，但只有 {len(archives)} 份稿件存档"
+              f"（需 ≥{WEEKLY_MIN_ARCHIVES} 份），本次退回当日日报", file=sys.stderr)
+
     ai_context, rss_fetched, entry_count, zero_sources, source_stats, stale_sources = fetch_news()
 
-    if not ai_context:
+    # 日报没素材就不发；周回顾的主素材是存档，24h 无新增照样成立
+    if not ai_context and not weekly:
         print("=== NO_NEWS ===")
         write_log("WARN", "过去24小时无有效新闻，未发送")
         return 0
 
     # 写边车：OK 日志摘要 + metrics，供 send 模式回填（保持 health_check 监控存活）
+    log_summary = (f"周回顾{len(archives)}天存档 + 新增{entry_count}条"
+                   if weekly else f"抓取{rss_fetched}条 → 保留{entry_count}条")
     FETCH_META.write_text(
         json.dumps(
-            {"log_summary": f"抓取{rss_fetched}条 → 保留{entry_count}条",
+            {"log_summary": log_summary,
+             "kind": "weekly" if weekly else "daily",
              "metrics": {"rss_fetched": rss_fetched, "rss_kept": entry_count,
                          "rss_zero_sources": zero_sources,
                          "rss_source_stats": source_stats,
-                         "rss_stale_sources": stale_sources}},
+                         "rss_stale_sources": stale_sources,
+                         "report_kind": "weekly" if weekly else "daily",
+                         "weekly_archive_days": len(archives)}},
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -290,9 +378,13 @@ def run_fetch() -> int:
 
     today = datetime.now().strftime("%Y-%m-%d")
     # stdout 只输出结构化标记 + context，供 Claude routine 稳定解析
-    print("=== FETCH_OK ===")
+    print("=== WEEKLY_OK ===" if weekly else "=== FETCH_OK ===")
     print(f"今天日期：{today}")
-    print(f"保留 {entry_count} 条有效新闻（共抓取 {rss_fetched} 条）")
+    if weekly:
+        print(f"本周回顾覆盖 {len(archives)} 天存档（{archives[0][0]} ~ {archives[-1][0]}），"
+              f"另有最近 24 小时新增 {entry_count} 条")
+    else:
+        print(f"保留 {entry_count} 条有效新闻（共抓取 {rss_fetched} 条）")
     if zero_sources:
         print(f"零产源：{', '.join(zero_sources)}")
     # 连续零产达阈值 → 结构化告警块，供 routine 在日报汇报里转述给用户
@@ -301,6 +393,14 @@ def run_fetch() -> int:
         for d, n in stale_sources.items():
             print(f"{d} 已连续 {n} 天零产，建议从 RSS_SOURCES 移除或更换")
         print("=== SOURCE_ALERT_END ===")
+    # 周回顾的主素材：本周每天已播出去的完整稿件，按日期从旧到新
+    if weekly:
+        print("=== ARCHIVE_BEGIN ===")
+        for day, text in archives:
+            print(f"===== {day} 日报 =====")
+            print(text)
+            print()
+        print("=== ARCHIVE_END ===")
     print("=== CONTEXT_BEGIN ===")
     print(ai_context)
     print("=== CONTEXT_END ===")
@@ -346,6 +446,10 @@ def run_send(draft_path: Path) -> int:
         total = record_sent_urls(SENT_URLS, hrefs)
         print(f"  ✓ 已归档 {len(hrefs)} 条链接用于跨天去重（档案共 {total} 条）",
               file=sys.stderr)
+
+    # 存下当天稿件，供周日的《AI 产业周回顾》取材（周回顾稿本身也存，
+    # 但回看只取 6 天即周一到周六，不会把上周日的回顾稿卷进下一份回顾）
+    archive_draft(report)
 
     # OK 日志：从 fetch 边车取摘要与 metrics，保持 health_check 监控存活
     try:
