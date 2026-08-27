@@ -7,7 +7,7 @@
 
 ## 工作流概述
 
-这是一个 **AI 产业日报系统**。每早由本地 Claude 定时任务触发：`daily_report.py --mode fetch` 抓取资讯（best-effort 抓正文全文，失败回退 RSS 摘要）→ Claude 按 `prompt.md` 写稿 → `daily_report.py --mode send` 推送 Telegram。脚本本身只做抓取与发送，零第三方大模型 API、零 token 成本。
+这是一个 **AI 产业日报系统**。每早由本地 Claude 定时任务触发：`daily_report.py --mode fetch` 抓取资讯（best-effort 抓正文全文，失败回退 RSS 摘要）→ Claude 按 `prompt.md` 写稿 → `daily_report.py --mode send` 推送飞书。脚本本身只做抓取与推送，零第三方大模型 API、零 token 成本。
 
 **周日出的是《AI 产业周回顾》而非当日日报**，素材取本周稿件存档，写稿规范换成 `prompt_weekly.md`，详见下方「周日周回顾」一节。
 
@@ -22,7 +22,7 @@ RSS × 10 源 ──▶ daily_report.py --mode fetch
  IEEE / Ars Technica /             ▼
  The Decoder）              Claude 按 prompt.md 写稿 → logs/report_draft.txt
                                    ▼
-                            daily_report.py --mode send ──▶ Telegram（AI 产业日报）
+                            daily_report.py --mode send ──▶ 飞书（AI 产业日报）
                                    │
                                    └─▶ logs/archive/YYYY-MM-DD.txt（存档，供周回顾取材）
 
@@ -33,7 +33,7 @@ logs/archive/ 最近 6 天稿件 ─┐
                                         ▼
                        Claude 按 prompt_weekly.md 写稿 → 同一个 report_draft.txt
                                         ▼
-                             --mode send ──▶ Telegram（AI 产业周回顾）
+                             --mode send ──▶ 飞书（AI 产业周回顾）
 ```
 
 ### 自动化调度
@@ -91,7 +91,7 @@ logs/archive/ 最近 6 天稿件 ─┐
 | `logs/health_check.log` | health_check 运行日志 | 每日写入 |
 | `logs/headless_catchup.log` | 无头补跑运行日志 | 触发时写入 |
 | `changelog.md` | 问题追踪，与 health_check 联动 | 按需 |
-| `pending_messages.json` | Telegram 发送缓存（降级保护） | 临时 |
+| `pending_messages.json` | 飞书推送缓存（降级保护） | 临时 |
 | `com.shirley.ai-daily-news-bot.plist.example` | 环境变量 plist 模板（正式配置在 `~/Library/LaunchAgents/`，是端口/密钥的唯一权威源，`claude_report.sh` 从中读环境变量；不含调度，09:15 launchd 兜底已于 2026-07 移除，失败兜底由 health_check + auto_repair 承担） | 极少 |
 | `com.shirley.ai-daily-news-bot-health.plist` | health_check launchd 配置（11:00 触发） | 极少 |
 
@@ -114,11 +114,16 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 ```
 `health_check.sh` 依赖 `[FAIL]` 字符串匹配，改动格式会导致健康检查失效。
 
-### Telegram 输出格式
+### 稿件格式（HTML 中间格式 → 飞书卡片 markdown）
 - 所有 AI 输出必须是 **HTML 格式**，禁止 Markdown
 - 只能使用 `<b>` 和 `<a href="...">` 两种标签
-- 单条消息上限 4096 字符；超长由 `bot_utils.paginate_telegram` 按段落边界切分，
-  **每条顶部加 `<b>（n/N）</b>` 页码**（单条不加）。页码在 sanitize 之后拼接，切分点不会腰斩条目
+- 这层 HTML 只是**内部中间格式**：`bot_utils.html_to_lark_md` 在推送前把它翻译成
+  飞书卡片 markdown（`<b>x</b>` → `**x**`，`<a href><b>标题</b></a>` → `**[标题](url)**`）。
+  ⚠️ 加粗超链接**只有 `**[文字](url)**` 这一种写法有效**，`[**文字**](url)` 真机不生效
+  保留 HTML 是为了让 `extract_hrefs` 的跨天去重和 `logs/archive` 的周回顾取材继续工作
+- 单条消息上限是 webhook 请求体 20KB（markdown 较紧凑，约 1 万汉字）；超长由 `bot_utils.paginate_feishu`
+  按段落边界切分，**每条顶部加加粗的 `（n/N）` 页码**（单条不加）。切分点不会腰斩条目；
+  切完还会二次均衡，避免出现只有两行的尾页
 
 ### 分源零产监控与源淘汰
 - 每次 fetch 把各源 `{fetched, kept}` 写入 JSONL 的 `rss_source_stats`；`rss_zero_sources` 列出**过滤后一条都没剩**的源
@@ -148,16 +153,18 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 ### 代理
 - 固定走 `127.0.0.1:YOUR_PORT` (本地代理端口)
 - 端口在 `~/Library/LaunchAgents/com.shirley.ai-daily-news-bot.plist` 的 `HTTP_PROXY`/`HTTPS_PROXY` 里配置（唯一权威源）；改完即生效，`claude_report.sh` 每次运行时直接读文件，无需重载 launchd
-- `requests` 通过 `SESSION` 显式配置，`feedparser` 通过 `HTTP_PROXY` 环境变量
+- 抓取侧的 `requests` 与 `feedparser` 都通过 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量走代理；
+  推送侧用 `bot_utils` 里 `trust_env=False` 的专用 Session **直连飞书，不走代理**
 
 ### 重试策略
-- Telegram：最多 3 次，指数退避（5 → 10 → 20s）
+- 飞书推送：最多 3 次，退避 5 → 10 → 15s。飞书失败时照样返回 HTTP 200，
+  故成败只看响应体里的 `code`（非 0 即当作失败重试）
 - RSS 抓取（fetch_rss）：最多 2 次，退避 3 → 6s
 - 正文抓取（fetch_article_text）：best-effort、单次、失败即回退 RSS 摘要，不重试
 
 ### 消息缓存降级
-- send 模式发送前把稿子写入 `pending_messages.json`；代理不可用时也缓存
-- Telegram 发送成功后删除该文件
+- send 模式推送前把稿子写入 `pending_messages.json`
+- 飞书推送成功后删除该文件
 - 缓存用于避免内容丢失（可人工恢复），当前 Claude 流程不做自动重发
 
 ---
@@ -168,11 +175,11 @@ YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 |---------|------|
 | 修改 `run.log` 的 `[OK]/[FAIL]/[WARN]` 格式 | health_check.sh 依赖字符串匹配 |
 | 删除 `save_pending()` 调用 | 发送失败时稿件会永久丢失，无法人工恢复 |
-| 修改 PROMPT 中的 HTML 输出格式 | Telegram 不支持 Markdown |
+| 修改 PROMPT 中的 HTML 输出格式 | HTML 是内部中间格式，`html_to_lark_md` 与 `extract_hrefs` 都按它解析 |
 | 将 `timedelta(days=1)` 改小 | 会漏掉重要新闻 |
 | 修改 `with_retry` 的 exceptions 参数 | 会影响重试覆盖范围 |
 | 替换核心 RSS 源 | 确保数据抓取的广度与质量 |
-| 修改 `daily_report.py` 的 HTML 清洗逻辑 | 防止 Telegram 消息推送由于标签不规范而失败 |
+| 修改 `daily_report.py` 的 HTML 清洗逻辑 | 清洗与推送时的 unescape 互为逆运算，改一边会让正文里的 `<` `&` 串味 |
 | 删除 `archive_draft()` 调用 | 存档断一天，下个周日的周回顾就少一天素材且无法补回 |
 | 把 `WEEKLY_LOOKBACK_DAYS` 改成 7 | 会把上周日的回顾稿卷进本周回顾，造成回顾套回顾 |
 

@@ -1,6 +1,6 @@
 # AI Daily News Bot
 
-每天早上由 Claude 自动写稿：抓取 9 家全球顶级 AI 媒体的当日报道，去重、评分、提炼，生成一份结构化《AI 产业日报》推送到 Telegram。
+每天早上由 Claude 自动写稿：抓取 9 家全球顶级 AI 媒体的当日报道，去重、评分、提炼，生成一份结构化《AI 产业日报》推送到飞书。
 
 ---
 
@@ -38,7 +38,7 @@
 
 - **速览**：开头固定 5 条，每条带星级 + 至少一个具体数字，与正文前 5 条一一对应——只看速览就能掌握当天要点
 - **产业动态**：每条为「加粗超链接标题（点标题直达原文）+ 📄 The Details（逐条具体事实，句句自足）」
-- **超长自动分页**：超过 Telegram 单条 4096 上限时按段落边界切分，每条顶部标 `（n/N）` 页码，条目不会被腰斩
+- **超长自动分页**：超过飞书 webhook 单条 20KB 请求体上限时按段落边界切分，每条顶部标 `（n/N）` 页码，条目不会被腰斩；切完还会二次均衡，避免出现只有两行的尾页
 - **周日出周回顾**：北京时间周日不发当日日报，改发《AI 产业周回顾》——以本周每天已推送稿件的存档为素材，跨天合并同一线索、按一周尺度重新评分（只留 4 分以上）、按主题分组，另附「本周数字」。周日仍照常抓最近 24h 并入回顾，周末的新闻不会漏掉
 
 **稳定性 — 出了问题自己修**
@@ -54,7 +54,7 @@
 ## Demo 预览
 
 <details>
-<summary>点击展开查看 Bot 推送到 Telegram 的长图预览</summary>
+<summary>点击展开查看 Bot 的推送长图预览（截图摄于 Telegram 时期，版式与飞书一致）</summary>
 <br>
 
 ![AI Daily News Bot 运行效果图](full_demo.png)
@@ -80,11 +80,11 @@ RSS × 7 源 ──▶ daily_report.py --mode fetch
                                    │  → logs/report_draft.txt
                                    ▼
                             daily_report.py --mode send
-                                   │  清洗为 Telegram 安全 HTML
-                                   │  超 4096 → 按段落分页 + (n/N) 页码
-                                   │  发送成功 → 归档链接供跨天去重
+                                   │  清洗 HTML → 转飞书卡片 markdown
+                                   │  超 20KB → 按段落分页 + (n/N) 页码
+                                   │  推送成功 → 归档链接供跨天去重
                                    ▼
-                              Telegram（AI 产业日报）
+                               飞书（AI 产业日报）
 
 【自动化调度】
 10:00  Claude 定时任务（唯一写稿入口）
@@ -157,7 +157,7 @@ AI Daily News Bot/
 │   ├── health_check.log              # health_check 运行日志
 │   └── .ok_streak                     # 连续成功计数
 ├── changelog.md                       # 问题追踪，与 health_check 联动
-├── pending_messages.json              # Telegram 缓存（仅 Telegram 失败时存在）
+├── pending_messages.json              # 推送缓存（仅飞书推送失败时存在）
 ├── AGENTS.md                          # 通用 AI 操作手册（适用于任意 AI 工具）
 ├── CLAUDE.md                          # Claude Code 专属上下文（引用 AGENTS.md）
 ├── com.shirley.ai-daily-news-bot.plist.example       # 环境变量 plist 模板（正式配置在 ~/Library/LaunchAgents/，是端口/密钥的唯一权威源；不含调度，09:15 launchd 兜底已于 2026-07 移除）
@@ -166,7 +166,7 @@ AI Daily News Bot/
 └── README.md                          # 本文件（人类阅读）
 ```
 
-> `logs/` 下的文件均为运行时自动生成，不预置。`pending_messages.json` 仅在 Telegram 发送失败时存在。
+> `logs/` 下的文件均为运行时自动生成，不预置。`pending_messages.json` 仅在飞书推送失败时存在。
 
 ---
 
@@ -178,9 +178,9 @@ AI Daily News Bot/
 
 | 变量 | 说明 | 来源 |
 |------|------|------|
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | plist（需手动填入） |
-| `TELEGRAM_CHAT_ID` | 目标 Chat ID | plist（已配置）|
-| `HTTPS_PROXY` / `HTTP_PROXY` | 本地代理地址 | plist（已配置，127.0.0.1:YOUR_PORT）|
+| `FEISHU_WEBHOOK` | 飞书自定义机器人 webhook 地址 | plist（需手动填入） |
+| `FEISHU_SECRET` | 机器人签名密钥（未开签名校验则留空） | plist（需手动填入） |
+| `HTTPS_PROXY` / `HTTP_PROXY` | 本地代理地址，**仅抓取阶段使用**（推送飞书是直连） | plist（已配置，127.0.0.1:YOUR_PORT）|
 
 ---
 
@@ -191,7 +191,7 @@ AI Daily News Bot/
 cd ~/Desktop/bots/AI\ Daily\ News\ Bot
 bash claude_report.sh fetch     # 抓取 + 抓正文，把写稿素材打到 stdout
 # （由 Claude 依 prompt.md 写稿并存入 logs/report_draft.txt）
-bash claude_report.sh send      # 读取 report_draft.txt，清洗 HTML 后推送 Telegram
+bash claude_report.sh send      # 读取 report_draft.txt，清洗 HTML 后推送飞书
 ```
 
 **验证调度状态**

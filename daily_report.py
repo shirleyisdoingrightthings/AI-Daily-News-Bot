@@ -2,11 +2,11 @@
 """
 AI 产业日报
 从多个 RSS 源抓取新闻（best-effort 抓正文全文，失败回退 RSS 摘要），
-由 Claude 写稿后发送到 Telegram。本脚本只负责抓取与发送，不含写稿用的第三方大模型 API。
+由 Claude 写稿后推送到飞书。本脚本只负责抓取与推送，不含写稿用的第三方大模型 API。
 
 两种运行模式（--mode，均零 API 成本）：
 - fetch：抓取 + 抓正文 → 把新闻 context 打到 stdout（供 Claude routine 读取写稿）
-- send ：读取 Claude 写好的稿子文件 → 清洗 HTML → 发送 Telegram + 写日志
+- send ：读取 Claude 写好的稿子文件 → 清洗 HTML → 推送飞书 + 写日志
 
 北京时间周日 fetch 不出当日日报，改出《AI 产业周回顾》：素材是本周每天已推送稿件的
 存档（logs/archive/）+ 最近 24 小时新增，stdout 标记为 === WEEKLY_OK ===。
@@ -21,7 +21,6 @@ import time
 import json
 import argparse
 import traceback
-import requests
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,10 +29,10 @@ from pathlib import Path
 # 从脚本自身位置推导共享层（bot 目录的同级 shared/），
 # 这样整个 bots 文件夹搬到任何位置都不用改路径
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from bot_utils import (sanitize_html, with_retry, fetch_rss, parse_entry_date,
+from bot_utils import (sanitize_html, fetch_rss, parse_entry_date,
                        already_ran_today, fetch_article_text,
                        url_key, load_sent_urls, record_sent_urls, extract_hrefs,
-                       is_ai_relevant, paginate_telegram, update_zero_streak,
+                       is_ai_relevant, send_feishu, update_zero_streak,
                        resolve_proxy)
 
 LOG_FILE    = Path(__file__).parent / "logs" / "run.log"
@@ -64,9 +63,10 @@ DEFAULT_WINDOW_H = 24
 
 # ===== P0: 显式代理配置 =====
 _PROXY = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
-SESSION = requests.Session()
-SESSION.proxies = {"http": _PROXY, "https": _PROXY}
-# feedparser 内部使用 urllib，通过环境变量注入代理
+# 抓取一律走 bot_utils 里的 requests（trust_env 默认开），feedparser 内部用 urllib，
+# 两者都只认环境变量，所以代理在这里注入即可。
+# 本脚本不再持有自己的 Session：改用飞书后推送不经代理，由 bot_utils 的专用直连
+# Session 负责（见 bot_utils 第 9 节）。
 os.environ.setdefault("HTTP_PROXY",  _PROXY or "")
 os.environ.setdefault("HTTPS_PROXY", _PROXY or "")
 
@@ -85,8 +85,10 @@ def write_log(status: str, message: str, metrics: dict = None) -> None:
 
 
 # ===== 配置（优先读取环境变量）=====
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "your_telegram_bot_token")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "your_telegram_chat_id")
+# 飞书自定义机器人：webhook 地址在群「设置 → 群机器人 → 添加机器人 → 自定义机器人」
+# 里取得。若在那里勾了「签名校验」，把密钥一并放进 FEISHU_SECRET；没勾就留空。
+FEISHU_WEBHOOK = os.getenv("FEISHU_WEBHOOK", "")
+FEISHU_SECRET  = os.getenv("FEISHU_SECRET",  "")
 
 # (feed_url, limit, is_general[, window_h])
 # is_general=True 表示这是泛科技源而非 AI 垂直源，条目要过 is_ai_relevant 闸门。
@@ -113,7 +115,7 @@ RSS_SOURCES = [
 ]
 
 # ===== P2: 消息缓存（降级策略）=====
-# 代理不可用或 Telegram 发送失败时把稿件存到 pending_messages.json，避免内容丢失。
+# 飞书推送失败时把稿件存到 pending_messages.json，避免内容丢失。
 # 注意：**不做自动重发**——重发要判断"这稿子还是今天的吗"，跨天重发旧稿比丢一次
 # 更糟。当天补救由 health_check → claude_catchup 重走完整流程负责，缓存只作为
 # 人工恢复的兜底副本。（2026-08 删除了定义后从未被调用的 flush_pending。）
@@ -226,30 +228,12 @@ def build_ai_context(all_entries: list) -> tuple:
     return "\n".join(lines), kept_per_source, drops
 
 
-# ===== P0: 发送 Telegram（单块重试 + 整体分块）=====
-@with_retry(max_retries=3, base_delay=5, exceptions=(requests.RequestException,))
-def _send_one(chunk: str) -> None:
-    api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    resp = SESSION.post(
-        api_url,
-        json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": chunk,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
-    if not resp.ok:
-        raise requests.RequestException(f"Telegram 返回错误: {resp.text}")
-
-
-def send_telegram(text: str) -> None:
-    # 切分 + 页码统一在 bot_utils.paginate_telegram 里做（三个 bot 共用同一实现）。
-    # 调用方已完成 sanitize_html，故页码的 <b> 标签不会被转义。
-    chunks = paginate_telegram(text)
-    for chunk in chunks:
-        _send_one(chunk)
+# ===== P0: 推送飞书 =====
+# HTML → 富文本 post 的转换、20KB 分页、失败重试统一在 bot_utils.send_feishu 里做
+# （三个 bot 共用同一实现）。
+def send_report(text: str) -> int:
+    """推送稿件，返回实际发出的消息条数。调用方须已完成 sanitize_html。"""
+    return send_feishu(text, FEISHU_WEBHOOK, FEISHU_SECRET)
 
 
 # ===== 抓取阶段（fetch 模式用）=====
@@ -265,8 +249,7 @@ def _proxy_ok() -> bool:
         return not _PROXY          # 本来就没配代理 → 直连放行；配了但全不通 → 失败
     if switched:
         _PROXY = resolved
-        SESSION.proxies = {"http": resolved, "https": resolved}
-        # feedparser 走 urllib，必须同步环境变量（用赋值而非 setdefault）
+        # 抓取侧走 requests/feedparser，两者都读环境变量（用赋值而非 setdefault）
         os.environ["HTTP_PROXY"] = resolved
         os.environ["HTTPS_PROXY"] = resolved
     return True
@@ -423,20 +406,17 @@ def run_send(draft_path: Path) -> int:
         write_log("FAIL", f"稿子文件为空：{draft_path}")
         return 1
 
-    # HTML 白名单清洗，防止非法标签导致 Telegram 发送失败
+    # HTML 白名单清洗：这里的 HTML 只是内部中间格式，send_report 会把它翻译成
+    # 飞书的富文本结构；清洗保证正文里的裸 < > & 不会被后面的标签解析吃掉。
     report = sanitize_html(report)
 
-    # 代理不可用时不丢内容：缓存下来，等代理恢复后补发
-    if not _proxy_ok():
-        save_pending([report])
-        write_log("WARN", f"代理不可用（{_PROXY}），稿子已缓存未发送")
-        return 0
-
-    # P2: 先持久化缓存，防止 Telegram 失败时内容丢失
+    # P2: 先持久化缓存，防止推送失败时内容丢失
+    # 这里不再做代理预检：飞书直连可达，推送阶段本来就不需要翻墙代理。
+    # （Telegram 时代代理一挂当天就整个不播，现在只有抓取阶段依赖它。）
     save_pending([report])
-    print("📨 发送到 Telegram...", file=sys.stderr)
-    send_telegram(report)
-    print("  ✓ 发送成功", file=sys.stderr)
+    print("📨 推送到飞书...", file=sys.stderr)
+    sent = send_report(report)
+    print(f"  ✓ 推送成功（{sent} 条）", file=sys.stderr)
     CACHE_FILE.unlink(missing_ok=True)
 
     # 归档本次真正播出去的链接，供后续 fetch 跨天去重。
@@ -459,7 +439,7 @@ def run_send(draft_path: Path) -> int:
     duration = round(time.time() - t0, 1)
     write_log(
         "OK",
-        f"Claude写稿 → {meta.get('log_summary', '')} → Telegram发送成功（{len(report)}字）",
+        f"Claude写稿 → {meta.get('log_summary', '')} → 飞书推送成功（{sent} 条 / {len(report)}字）",
         metrics={**meta.get("metrics", {}), "ai_calls": 0, "duration_s": duration,
                  "report_chars": len(report), "source": "claude"},
     )
