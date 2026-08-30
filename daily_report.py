@@ -33,7 +33,9 @@ from bot_utils import (sanitize_html, fetch_rss, parse_entry_date,
                        already_ran_today, fetch_article_text,
                        url_key, load_sent_urls, record_sent_urls, extract_hrefs,
                        is_ai_relevant, send_feishu, update_zero_streak,
-                       resolve_proxy)
+                       resolve_proxy,
+                       make_logger, make_pending_saver, proxy_ok,
+                       emit_fetch_output)
 
 LOG_FILE    = Path(__file__).parent / "logs" / "run.log"
 JSONL_FILE  = Path(__file__).parent / "logs" / "run.jsonl"
@@ -43,6 +45,9 @@ CACHE_FILE  = Path(__file__).parent / "pending_messages.json"
 DRAFT_FILE  = Path(__file__).parent / "logs" / "report_draft.txt"
 # fetch 模式写出、send 模式读回的边车：承载 OK 日志摘要与 health_check 所需 metrics
 FETCH_META  = Path(__file__).parent / "logs" / "fetch_meta.json"
+# fetch 抓来的完整 stdout（marker + context）落盘一份：调用方截断、进程中断、
+# 或写稿失败要重来时，不必再打一遍外部 API。每次 fetch 覆盖写，只留最近一次。
+LAST_CONTEXT = Path(__file__).parent / "logs" / "last_context.txt"
 # 跨天去重档案：send 成功后记录稿件里实际用到的链接，fetch 时据此排除
 SENT_URLS   = Path(__file__).parent / "logs" / "sent_urls.json"
 # RSS 源连续零产计数（fetch 阶段唯一写入，health_check 只读）
@@ -71,17 +76,9 @@ os.environ.setdefault("HTTP_PROXY",  _PROXY or "")
 os.environ.setdefault("HTTPS_PROXY", _PROXY or "")
 
 
-# ===== P1: 结构化日志 =====
-def write_log(status: str, message: str, metrics: dict = None) -> None:
-    ts   = datetime.now().strftime("%Y-%m-%d %H:%M")
-    line = f"{ts}  [{status}]  {message}\n"
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line)
-    print(line, end="")
-    if metrics:
-        record = {"ts": ts, "status": status, "msg": message, **metrics}
-        with open(JSONL_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+# ===== P1: 结构化日志（实现见 shared/bot_utils.make_logger）=====
+write_log = make_logger(LOG_FILE, JSONL_FILE)
+
 
 
 # ===== 配置（优先读取环境变量）=====
@@ -119,9 +116,8 @@ RSS_SOURCES = [
 # 注意：**不做自动重发**——重发要判断"这稿子还是今天的吗"，跨天重发旧稿比丢一次
 # 更糟。当天补救由 health_check → claude_catchup 重走完整流程负责，缓存只作为
 # 人工恢复的兜底副本。（2026-08 删除了定义后从未被调用的 flush_pending。）
-def save_pending(messages: list) -> None:
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"ts": datetime.now().isoformat(), "messages": messages}, f, ensure_ascii=False)
+save_pending = make_pending_saver(CACHE_FILE)
+
 
 
 # ===== 稿件存档（周日「本周回顾」的素材来源）=====
@@ -166,6 +162,20 @@ def load_week_archives(days: int = WEEKLY_LOOKBACK_DAYS) -> list:
         if text:
             out.append((day.isoformat(), text))
     return out
+
+
+def _missing_archive_days(archives: list) -> list:
+    """回看窗口内哪些天没有存档，返回日期字符串列表（旧 → 新）。
+
+    用途只有一个：让 fetch 的 stdout 明说"这周缺哪几天"。周回顾的素材完整性
+    是静默失效的——某天没开电脑，存档就少一份，而 load_week_archives 只是跳过，
+    写稿方无从知道自己拿到的是残缺的一周。"""
+    have  = {day for day, _ in archives}
+    today = datetime.now().date()
+    return [d for d in
+            ((today - timedelta(days=i)).isoformat()
+             for i in range(WEEKLY_LOOKBACK_DAYS, 0, -1))
+            if d not in have]
 
 
 # ===== 整理新闻数据 =====
@@ -238,21 +248,11 @@ def send_report(text: str) -> int:
 
 # ===== 抓取阶段（fetch 模式用）=====
 def _proxy_ok() -> bool:
-    """代理预检 + 端口自愈。
-
-    配置端口不通时会探测候选端口（见 bot_utils.PROXY_CANDIDATES），命中则
-    就地切换本进程的 SESSION 与环境变量——换代理软件导致端口变化时不再
-    静默停摆。无代理配置直接放行（视为直连）。"""
+    """代理预检 + 端口自愈，实现见 shared/bot_utils.proxy_ok。"""
     global _PROXY
-    resolved, switched = resolve_proxy(_PROXY)
-    if resolved is None:
-        return not _PROXY          # 本来就没配代理 → 直连放行；配了但全不通 → 失败
-    if switched:
-        _PROXY = resolved
-        # 抓取侧走 requests/feedparser，两者都读环境变量（用赋值而非 setdefault）
-        os.environ["HTTP_PROXY"] = resolved
-        os.environ["HTTPS_PROXY"] = resolved
-    return True
+    ok, _PROXY = proxy_ok(_PROXY, None)
+    return ok
+
 
 
 def fetch_news() -> tuple:
@@ -360,33 +360,40 @@ def run_fetch() -> int:
     )
 
     today = datetime.now().strftime("%Y-%m-%d")
-    # stdout 只输出结构化标记 + context，供 Claude routine 稳定解析
-    print("=== WEEKLY_OK ===" if weekly else "=== FETCH_OK ===")
-    print(f"今天日期：{today}")
+    # stdout 只输出结构化标记 + context，供 Claude routine 稳定解析。
+    # 先攒成一个列表再一次性交给 emit_fetch_output，顺带落盘 logs/last_context.txt。
+    out = ["=== WEEKLY_OK ===" if weekly else "=== FETCH_OK ===",
+           f"今天日期：{today}"]
     if weekly:
-        print(f"本周回顾覆盖 {len(archives)} 天存档（{archives[0][0]} ~ {archives[-1][0]}），"
-              f"另有最近 24 小时新增 {entry_count} 条")
+        out.append(f"本周回顾覆盖 {len(archives)} 天存档（{archives[0][0]} ~ {archives[-1][0]}），"
+                   f"另有最近 24 小时新增 {entry_count} 条")
+        # 存档缺天 = 那天根本没出稿（多半是没开电脑）。load_week_archives 会静默跳过，
+        # 不点出来的话，写稿方会把一份只覆盖 4 天的回顾当成完整的一周来写。
+        missing = _missing_archive_days(archives)
+        if missing:
+            out.append("=== ARCHIVE_GAP ===")
+            out.append(f"本周有 {len(missing)} 天没有存档（当天未出稿）：{', '.join(missing)}")
+            out.append("=== ARCHIVE_GAP_END ===")
     else:
-        print(f"保留 {entry_count} 条有效新闻（共抓取 {rss_fetched} 条）")
+        out.append(f"保留 {entry_count} 条有效新闻（共抓取 {rss_fetched} 条）")
     if zero_sources:
-        print(f"零产源：{', '.join(zero_sources)}")
+        out.append(f"零产源：{', '.join(zero_sources)}")
     # 连续零产达阈值 → 结构化告警块，供 routine 在日报汇报里转述给用户
     if stale_sources:
-        print("=== SOURCE_ALERT ===")
+        out.append("=== SOURCE_ALERT ===")
         for d, n in stale_sources.items():
-            print(f"{d} 已连续 {n} 天零产，建议从 RSS_SOURCES 移除或更换")
-        print("=== SOURCE_ALERT_END ===")
+            out.append(f"{d} 已连续 {n} 天零产，建议从 RSS_SOURCES 移除或更换")
+        out.append("=== SOURCE_ALERT_END ===")
     # 周回顾的主素材：本周每天已播出去的完整稿件，按日期从旧到新
     if weekly:
-        print("=== ARCHIVE_BEGIN ===")
+        out.append("=== ARCHIVE_BEGIN ===")
         for day, text in archives:
-            print(f"===== {day} 日报 =====")
-            print(text)
-            print()
-        print("=== ARCHIVE_END ===")
-    print("=== CONTEXT_BEGIN ===")
-    print(ai_context)
-    print("=== CONTEXT_END ===")
+            out.append(f"===== {day} 日报 =====")
+            out.append(text)
+            out.append("")
+        out.append("=== ARCHIVE_END ===")
+    out += ["=== CONTEXT_BEGIN ===", ai_context, "=== CONTEXT_END ==="]
+    emit_fetch_output(out, LAST_CONTEXT)
     return 0
 
 
