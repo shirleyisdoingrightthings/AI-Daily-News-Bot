@@ -34,7 +34,6 @@ from bot_utils import (sanitize_html, fetch_rss, parse_entry_date,
                        already_ran_today, fetch_article_text,
                        url_key, load_sent_urls, record_sent_urls, extract_hrefs,
                        is_ai_relevant, send_feishu, update_zero_streak,
-                       resolve_proxy,
                        make_logger, make_pending_saver, proxy_ok,
                        emit_fetch_output)
 
