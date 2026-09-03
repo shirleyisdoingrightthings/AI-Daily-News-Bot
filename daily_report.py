@@ -16,6 +16,7 @@ AI 产业日报
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -109,7 +110,74 @@ RSS_SOURCES = [
     # 官宣一定会被上面的垂直媒体源当天覆盖，留着只是白占抓取额度。不要再加回来。
     # 泛科技源：抓取额度放宽，靠相关性闸门收敛（原额度会被非 AI 条目吃掉）
     ("https://www.engadget.com/rss.xml",                                     8, True),
+    # 2026-09-03：加 Tom's Hardware 补算力/芯片/数据中心硬件侧的报道。
+    # 站点没有 AI 分类 feed——/tech-industry/artificial-intelligence/feed 是 301 到
+    # HTML 页面，/feeds/tag/ai.xml 之类全是 404，只有全站 feeds.xml 可用。
+    # 全站源日发 30+ 条，游戏硬件评测和促销占大头，且 is_ai_relevant 的关键词里有
+    # nvidia/gpu，显卡促销会直接骗过闸门，所以额外过 _LOW_VALUE_RE（见下）。
+    # 额度 14：feed 是倒序的，取最新 14 条，两道闸门后日均剩 3-5 条。
+    ("https://www.tomshardware.com/feeds.xml",                              14, True),
+    # ── 机器人 / 具身智能 ──────────────────────────────────────────
+    # 2026-09-03：查 14 天存档发现 #机器人 标签只用过 8 次，且 Figure、Unitree、宇树、
+    # 波士顿动力、世界模型、具身智能一次都没出现过——抓到的都是泛科技媒体顺带写的
+    # 消费级机器人，机器人产业本身是空白。加下面两个垂直源补这块。
+    #
+    # The Robot Report：产业向（人形、具身智能、融资、量产），日更，24h 窗口稳定有货。
+    # 但它同时是 RoboBusiness 大会的主办方媒体，feed 里常年混着"Learn why … at
+    # RoboBusiness"这类会议引流稿——实测 24h 内 3 条里有 2 条是——全靠 _LOW_VALUE_RE
+    # 拦，所以那道闸门改成了对垂直源也生效，别再改回只管泛科技源。
+    ("https://www.therobotreport.com/feed/",                                 6, False),
+    # TechCrunch 机器人分类：量小质高（一天 0-2 条），补的是「机器人作为生意」这个
+    # 角度（车企转产机器人、无人机管制），和已有的 TechCrunch AI 分类源按 URL 去重，
+    # 重叠条目会被单次运行内的 seen_urls 挡掉。故给 48h 窗口，否则大半天数零产。
+    ("https://techcrunch.com/category/robotics/feed/",                       4, False, 48),
+    # 试过但没加的：IEEE Spectrum 机器人（spectrum.ieee.org/feeds/topic/robotics.rss）。
+    # 质量最高，但发文成簇、周更节奏——2026-09-03 实测最新一条已是 133 小时前，
+    # 给到 120h 窗口仍然零产。当日报源会天天触发"连续 3 天零产"告警，反成噪音。
 ]
+
+def _source_label(feed_url: str) -> str:
+    """RSS 源在统计与零产告警里的显示名。
+
+    2026-09-03：加机器人源后同一域名下出现了两个 feed
+    （techcrunch.com 的 artificial-intelligence 与 robotics 分类）。原来直接拿
+    `feed_url.split("/")[2]` 当键，两个源会被合并成一条统计，零产告警也就说不清
+    是哪个 feed 死了。故：域名在 RSS_SOURCES 里出现多次时，追加最具区分度的那段
+    路径；只出现一次的源保持原样，不改既有的 .zero_streak.json 键名。"""
+    domain = feed_url.split("/")[2]
+    same = [s[0] for s in RSS_SOURCES if s[0].split("/")[2] == domain]
+    if len(same) < 2:
+        return domain
+    generic = {"feed", "rss", "index.xml", "category", "tag", "feeds", "", "rss.xml"}
+    segs = [p for p in feed_url.split("/")[3:] if p and p not in generic]
+    return f"{domain}/{segs[-1]}" if segs else domain
+
+
+# 低价值条目闸门：促销 / 评测 / 会议推广。**对所有源生效，不分垂直源与泛科技源。**
+#
+# 两批不同的噪音，都得拦：
+#  ① 促销与硬件评测——is_ai_relevant 只看"提没提 AI"，而 Tom's Hardware 这类硬件站
+#     的促销稿必带 RTX/GPU/Nvidia，天然能过关键词闸门（实测 40 条里 15 条"AI 相关"，
+#     其中 4 条是显卡笔记本打折和机箱评测）。
+#  ② 会议/网络研讨会推广——2026-09-03 加机器人源时发现的：The Robot Report 24h 窗口
+#     里 3 条有 2 条是 "Learn why … at RoboBusiness" 这种会议引流稿；TechCrunch 各分类
+#     feed 里同样常年飘着 "… to TechCrunch Disrupt 2026"。这类稿子没有事实、只有议程，
+#     进了 context 纯属挤占名额。垂直源一样会发，所以闸门不能只对泛科技源开。
+#
+# ⚠️ 只匹配标题，不匹配摘要——正当报道的正文里出现价格、"register" 都很正常。
+_LOW_VALUE_RE = re.compile(
+    # ① 促销与评测
+    r"(?:^|\s)(?:save \$|save \d+%|\$\d[\d,.]*\s+(?:buys|gets)|now just \$|"
+    r"drops? (?:back )?(?:under|to) \$|\d+% (?:off|discount)|deal of the|"
+    r"best deals?|labor day sale|prime day|black friday|cyber monday|coupon)"
+    r"|\breview:|\breview\b\s*[—-]|hands[- ]on review"
+    # ② 会议 / 研讨会 / 榜单回顾
+    r"|\bRoboBusiness\b|\bTechCrunch Disrupt\b|\bDisrupt 20\d\d\b"
+    r"|\bwebinar\b|\bregister (?:now|today)\b|\bjoin us\b|\bsave the date\b"
+    r"|\bspeakers? (?:announced|lineup)\b"
+    r"|\bTop \d+ .{0,40}\b(?:stories|moments|robots) of\b",
+    re.IGNORECASE,
+)
 
 # ===== P2: 消息缓存（降级策略）=====
 # 飞书推送失败时把稿件存到 pending_messages.json，避免内容丢失。
@@ -183,14 +251,15 @@ def build_ai_context(all_entries: list) -> tuple:
     """整理素材，返回 (context, kept_per_source, drop_stats)。
 
     过滤顺序：标题/URL 缺失 → 单次运行内 URL 去重 → 跨天已播去重 →
-    时间窗（按源，见 RSS_SOURCES 的 window_h）→ 泛科技源的 AI 相关性闸门。"""
+    时间窗（按源，见 RSS_SOURCES 的 window_h）→ 泛科技源的 AI 相关性闸门
+    → 全源的低价值闸门（_LOW_VALUE_RE，促销/评测/会议推广）。"""
     now = datetime.now(timezone.utc)
     seen_urls: set = set()
     sent_before    = load_sent_urls(SENT_URLS)
     lines: list = []
 
     kept_per_source: dict = {}
-    drops = {"dup": 0, "already_sent": 0, "stale": 0, "off_topic": 0}
+    drops = {"dup": 0, "already_sent": 0, "stale": 0, "off_topic": 0, "promo": 0}
 
     picked: list = []   # (title, url, url_lower, snippet)
     for entry in all_entries:
@@ -217,6 +286,10 @@ def build_ai_context(all_entries: list) -> tuple:
         # 泛科技源过 AI 相关性闸门，垂直源直接放行
         if getattr(entry, "__general", False) and not is_ai_relevant(title, snippet):
             drops["off_topic"] += 1
+            continue
+        # 低价值闸门（促销/评测/会议推广）对所有源生效，只看标题
+        if _LOW_VALUE_RE.search(title):
+            drops["promo"] += 1
             continue
         src = getattr(entry, "__src", "?")
         kept_per_source[src] = kept_per_source.get(src, 0) + 1
@@ -265,7 +338,7 @@ def fetch_news() -> tuple:
         feed_url, limit, is_general = src[:3]
         window_h = src[3] if len(src) > 3 else DEFAULT_WINDOW_H
         entries = fetch_rss(feed_url, limit)
-        domain  = feed_url.split("/")[2]
+        domain  = _source_label(feed_url)
         # 给条目打上来源标记，供后续统计"过滤后每个源还剩几条"与相关性闸门判定
         for e in entries:
             e["__src"]      = domain
@@ -292,7 +365,8 @@ def fetch_news() -> tuple:
                                        threshold=ZERO_STREAK_THRESHOLD)
 
     print(f"   过滤明细：重复 {drops['dup']} · 已播过 {drops['already_sent']} · "
-          f"超时效窗 {drops['stale']} · 非 AI {drops['off_topic']} → 保留 {entry_count}",
+          f"超时效窗 {drops['stale']} · 非 AI {drops['off_topic']} · "
+          f"促销/评测 {drops['promo']} → 保留 {entry_count}",
           file=sys.stderr)
     streak_now = _load_streak()
     for d, s in sorted(source_stats.items(), key=lambda kv: -kv[1]["kept"]):

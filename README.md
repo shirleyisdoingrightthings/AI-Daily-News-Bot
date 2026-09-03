@@ -6,20 +6,35 @@
 
 ## 核心特性
 
-**数据来源 — 7 家媒体，覆盖主流到学术**
+**数据来源 — 10 个 feed，覆盖主流、算力硬件、半导体深度到机器人产业**
 
 | 类型 | 媒体 | 闸门 |
 |------|------|------|
-| AI 垂直频道 | The Verge (AI) · TechCrunch (AI) · Wired (AI) · MIT Tech Review (AI 主题) · The Decoder · Ars Technica (AI) | 直接放行 |
-| 泛科技全站源 | Engadget | 过 AI 相关性闸门 |
+| AI 垂直频道 | The Verge (AI) · TechCrunch (AI) · Wired (AI) · The Decoder · Ars Technica (AI) | 只过低价值闸门 |
+| 半导体/算力深度 | SemiAnalysis (newsletter) | 只过低价值闸门，窗口 120h |
+| 机器人/具身智能 | The Robot Report · TechCrunch (机器人，窗口 48h) | 只过低价值闸门 |
+| 泛科技全站源 | Engadget · Tom's Hardware | 过 AI 相关性闸门 + 低价值闸门 |
 
 不收厂商官方博客（OpenAI / Google / DeepMind 等）——发文稀疏、软文占比高，重要官宣当天必被上述垂直源覆盖。
 
-每日抓取约 31 条原始内容，经"跨天去重 → 时效窗 → 相关性闸门"三层过滤后进入写稿素材。时效窗默认 24h，个别发文慢的源单独放宽（当前 MIT Tech Review 为 72h）。
+每日抓取约 55 条原始内容，经"跨天去重 → 时效窗 → 相关性闸门 → 低价值闸门"四层过滤后进入写稿素材。时效窗默认 24h，个别源单独放宽（SemiAnalysis 120h、TechCrunch 机器人 48h）。
 
 > 泛科技源里大量条目与 AI 无关（游戏机 demo、Steam 功能更新、影视并购），实测约
 > 30% 的抓取额度被这类内容占掉。故对它们单独加一道 `is_ai_relevant` 闸门，而 AI
 > 垂直频道不过闸——避免误伤标题里不含关键词的正当选题。
+>
+> 机器人两个源是 2026-09-03 加的。此前 14 天存档里 `#机器人` 标签只用过 8 次，
+> 而 Figure、Unitree/宇树、波士顿动力、世界模型、具身智能**一次都没出现过**——抓到的
+> 全是泛科技媒体顺带写的消费级机器人，机器人产业本身是空白。The Robot Report 日更、
+> 产业向，但它是 RoboBusiness 大会的主办方媒体，feed 里常年混着会议引流稿，靠低价值
+> 闸门拦。**IEEE Spectrum 机器人试过没加**：质量最高但周更成簇，实测最新一条已是 133
+> 小时前，给到 120h 窗口仍然零产，当日报源只会天天触发零产告警。
+>
+> Tom's Hardware 是 2026-09-03 加的算力硬件补充源。它没有 AI 分类 feed（分类页的
+> `/feed` 是 301 到 HTML，`/feeds/tag/ai.xml` 全是 404），只能用全站 `feeds.xml`；
+> 而 `is_ai_relevant` 的关键词表里有 `nvidia` / `gpu`，显卡促销和装机评测会直接骗过
+> 闸门。故对泛科技源再加一道 `_PROMO_RE` 标题闸门拦掉 "Save $300…"、"… review:"
+> 这类条目。实测最新 14 条里保留 4 条，全部是数据中心 / HBM / AI 安全选题。
 
 **取材 — 优先抓正文全文，而不是只吃 RSS 摘要**
 
@@ -55,12 +70,13 @@
 
 ```
 [数据源]                          [抓取 / 写稿]                     [输出]
-RSS × 7 源 ──▶ daily_report.py --mode fetch
-（6 个 AI 垂直频道 +               │  build_ai_context()
-  1 个泛科技全站源）               │  ├─ URL 去重（单次运行内）
+RSS × 10 源 ─▶ daily_report.py --mode fetch
+（8 个 AI/半导体/机器人垂直源 +    │  build_ai_context()
+  2 个泛科技全站源）               │  ├─ URL 去重（单次运行内）
                                    │  ├─ 跨天去重（排除 logs/sent_urls.json）
                                    │  ├─ 时效窗（默认 24h，按源可调）
                                    │  ├─ AI 相关性闸门（仅泛科技源）
+                                   │  ├─ 低价值闸门（全源：促销/评测/会议）
                                    │  ├─ 并发 best-effort 抓正文全文
                                    │  └─ 抓不到 → 回退 RSS 摘要
                                    ▼
