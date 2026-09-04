@@ -18,10 +18,12 @@ AI 产业日报
 import os
 import re
 import sys
+import html
 import time
 import json
 import argparse
 import traceback
+import requests
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -107,15 +109,12 @@ RSS_SOURCES = [
     # 2026-08-06：移除全部厂商官方博客（openai.com/blog、blog.google/technology/ai，
     # 更早还有 deepmind.google）。这类源发文稀疏、软文占比高，长期零产；真正重要的
     # 官宣一定会被上面的垂直媒体源当天覆盖，留着只是白占抓取额度。不要再加回来。
-    # 泛科技源：抓取额度放宽，靠相关性闸门收敛（原额度会被非 AI 条目吃掉）
-    ("https://www.engadget.com/rss.xml",                                     8, True),
-    # 2026-09-03：加 Tom's Hardware 补算力/芯片/数据中心硬件侧的报道。
-    # 站点没有 AI 分类 feed——/tech-industry/artificial-intelligence/feed 是 301 到
-    # HTML 页面，/feeds/tag/ai.xml 之类全是 404，只有全站 feeds.xml 可用。
-    # 全站源日发 30+ 条，游戏硬件评测和促销占大头，且 is_ai_relevant 的关键词里有
-    # nvidia/gpu，显卡促销会直接骗过闸门，所以额外过 _LOW_VALUE_RE（见下）。
-    # 额度 14：feed 是倒序的，取最新 14 条，两道闸门后日均剩 3-5 条。
-    ("https://www.tomshardware.com/feeds.xml",                              14, True),
+    # 2026-09-04：撤掉两个泛科技源（Engadget、Tom's Hardware 全站）。
+    # 它们的定位是"用抓取额度换覆盖面，再靠 is_ai_relevant + _LOW_VALUE_RE 两道
+    # 闸门收敛"，但闸门本身很吃力——Tom's Hardware 全站日发 30+ 条，游戏硬件评测
+    # 和显卡促销占大头，而闸门关键词里恰好有 nvidia/gpu，促销稿会直接骗过去。
+    # TLDR（见下面的 fetch_tldr）是人工精选、已经做过一轮筛选，用它替代这种
+    # "广撒网 + 硬过滤"的路子。不要再把这两个源加回来。
     # ── 机器人 / 具身智能 ──────────────────────────────────────────
     # 2026-09-03：查 14 天存档发现 #机器人 标签只用过 8 次，且 Figure、Unitree、宇树、
     # 波士顿动力、世界模型、具身智能一次都没出现过——抓到的都是泛科技媒体顺带写的
@@ -134,6 +133,91 @@ RSS_SOURCES = [
     # 质量最高，但发文成簇、周更节奏——2026-09-03 实测最新一条已是 133 小时前，
     # 给到 120h 窗口仍然零产。当日报源会天天触发"连续 3 天零产"告警，反成噪音。
 ]
+
+# ===== TLDR：人工精选源（最高优先级）=====
+# 2026-09-04 加入。RSS 只给标题和落地页链接，正文全在落地页里，所以是两跳：
+#   tldr.tech/api/rss/<slug>  →  拿到当期落地页 URL（形如 tldr.tech/ai/2026-09-03）
+#   → 抓那个页面 → 解析 <article> 容器
+# 落地页结构：<article> 里是 <a href="原始源站"><h3>标题 (N minute read)</h3></a> + 摘要段。
+# **链接直接指向一手源**（研究博客、substack、testingcatalog 等），这些站现有 RSS
+# 源基本覆盖不到，这是加它的主要理由。
+#
+# 两个必须处理的点：
+#   1. 广告条目标题里带 "(Sponsor)"，必须滤掉（实测每期 2 条左右）。
+#   2. TLDR 是每日邮件，一期就是一天；周末不发。所以窗口给 48h，
+#      否则周一那轮会因为"最近一期是周五的"而整个零产。
+TLDR_SLUGS = ["ai", "tech"]
+TLDR_WINDOW_H = 48
+TLDR_MAX_PER_ISSUE = 12
+_TLDR_ART_RE = re.compile(r"(?is)<article[^>]*>(.*?)</article>")
+_TLDR_HREF_RE = re.compile(r'(?is)href="([^"]+)"')
+_TLDR_H3_RE = re.compile(r"(?is)<h3[^>]*>(.*?)</h3>")
+
+
+def _tldr_text(fragment: str) -> str:
+    txt = re.sub(r"(?is)<(script|style).*?</\1>", " ", fragment)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = html.unescape(txt)
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def fetch_tldr() -> list:
+    """抓 TLDR 落地页，返回与 fetch_rss 同形的条目列表（供主循环统一处理）。
+
+    任何一步失败都只影响 TLDR 自己：返回已拿到的部分，不抛异常、不影响其它源。
+    """
+    import feedparser
+    now = datetime.now(timezone.utc)
+    out = []
+    for slug in TLDR_SLUGS:
+        try:
+            issues = fetch_rss(f"https://tldr.tech/api/rss/{slug}", limit=5)
+        except Exception as exc:
+            print(f"  ✗ TLDR/{slug} RSS 失败：{exc}", file=sys.stderr)
+            continue
+        for issue in issues:
+            dt = parse_entry_date(issue)
+            if not dt or dt < now - timedelta(hours=TLDR_WINDOW_H):
+                continue
+            page_url = getattr(issue, "link", "") or ""
+            if not page_url:
+                continue
+            try:
+                resp = requests.get(page_url, headers={"User-Agent": _TLDR_UA}, timeout=30)
+                resp.raise_for_status()
+            except Exception as exc:
+                print(f"  ✗ TLDR 落地页 {page_url} 失败：{exc}", file=sys.stderr)
+                continue
+            n = 0
+            for art in _TLDR_ART_RE.findall(resp.text):
+                h3 = _TLDR_H3_RE.search(art)
+                href = _TLDR_HREF_RE.search(art)
+                if not (h3 and href):
+                    continue
+                title = _tldr_text(h3.group(1))
+                # 广告条目：标题里带 (Sponsor)
+                if not title or "(sponsor)" in title.lower():
+                    continue
+                link = href.group(1).split("?")[0]
+                if not link.startswith("http"):
+                    continue
+                body = _tldr_text(art)
+                # 摘要 = 去掉标题后的剩余正文
+                snippet = body.replace(title, "", 1).strip()
+                e = feedparser.util.FeedParserDict({
+                    "title": title,
+                    "link": link,
+                    "summary": snippet[:1200],
+                    # 用当期的发布时间，落地页里没有逐条时间
+                    "published_parsed": getattr(issue, "published_parsed", None),
+                })
+                out.append(e)
+                n += 1
+                if n >= TLDR_MAX_PER_ISSUE:
+                    break
+            print(f"  ✓ {n} 条  TLDR/{slug} {page_url}", file=sys.stderr)
+    return out
+
 
 def _source_label(feed_url: str) -> str:
     """RSS 源在统计与零产告警里的显示名。
@@ -164,6 +248,10 @@ def _source_label(feed_url: str) -> str:
 #     进了 context 纯属挤占名额。垂直源一样会发，所以闸门不能只对泛科技源开。
 #
 # ⚠️ 只匹配标题，不匹配摘要——正当报道的正文里出现价格、"register" 都很正常。
+# TLDR 落地页是普通网页，需要浏览器 UA（和 CNBC quote 同类防爬）
+_TLDR_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36")
+
 _LOW_VALUE_RE = re.compile(
     # ① 促销与评测
     r"(?:^|\s)(?:save \$|save \d+%|\$\d[\d,.]*\s+(?:buys|gets)|now just \$|"
@@ -333,6 +421,18 @@ def fetch_news() -> tuple:
     print("📡 抓取 RSS 源...", file=sys.stderr)
     all_entries = []
     fetched_counts: dict = {}
+
+    # TLDR 排在最前：它是人工精选，且 build_ai_context 的单次运行内 URL 去重
+    # 是"先到先得"——同一条新闻若 TLDR 和别的源都收了，先入列的这份会被保留，
+    # 后面重复的直接丢。所以放最前 = 优先用 TLDR 那份（它指向一手源、带精选摘要）。
+    tldr_entries = fetch_tldr()
+    for e in tldr_entries:
+        e["__src"] = "tldr.tech"
+        e["__general"] = False        # 已人工精选，不再过 AI 相关性闸门
+        e["__window_h"] = TLDR_WINDOW_H
+    all_entries.extend(tldr_entries)
+    fetched_counts["tldr.tech"] = len(tldr_entries)
+
     for src in RSS_SOURCES:
         feed_url, limit, is_general = src[:3]
         window_h = src[3] if len(src) > 3 else DEFAULT_WINDOW_H
