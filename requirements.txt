@@ -1,2 +1,3 @@
-feedparser>=6.0
-requests>=2.31
+# 依赖统一在 shared/requirements.txt 维护——本 bot 的第三方库全部经由
+# ../shared/bot_utils.py 使用，版本下限不要在这里另写一份，否则会漂。
+-r ../shared/requirements.txt
