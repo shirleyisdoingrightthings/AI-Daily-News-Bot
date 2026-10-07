@@ -29,10 +29,6 @@
         <key>FEISHU_WEBHOOK</key>
         <string>YOUR_FEISHU_WEBHOOK_URL</string>
 
-        <!-- 只有在添加机器人时勾了「签名校验」才需要填，没勾就留空字符串 -->
-        <key>FEISHU_SECRET</key>
-        <string></string>
-
         <!-- 本地代理地址：只有抓取 RSS/行情时需要，推送飞书是直连 -->
         <key>HTTPS_PROXY</key>
         <string>http://127.0.0.1:YOUR_PORT</string>

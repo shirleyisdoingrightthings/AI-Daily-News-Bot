@@ -85,9 +85,8 @@ write_log = make_logger(LOG_FILE, JSONL_FILE)
 
 # ===== 配置（优先读取环境变量）=====
 # 飞书自定义机器人：webhook 地址在群「设置 → 群机器人 → 添加机器人 → 自定义机器人」
-# 里取得。若在那里勾了「签名校验」，把密钥一并放进 FEISHU_SECRET；没勾就留空。
+# 里取得。
 FEISHU_WEBHOOK = os.getenv("FEISHU_WEBHOOK", "")
-FEISHU_SECRET  = os.getenv("FEISHU_SECRET",  "")
 
 # (feed_url, limit, is_general[, window_h])
 # is_general=True 表示这是泛科技源而非 AI 垂直源，条目要过 is_ai_relevant 闸门。
@@ -403,7 +402,7 @@ def build_ai_context(all_entries: list) -> tuple:
 # （三个 bot 共用同一实现）。
 def send_report(text: str) -> int:
     """推送稿件，返回实际发出的消息条数。调用方须已完成 sanitize_html。"""
-    return send_feishu(text, FEISHU_WEBHOOK, FEISHU_SECRET)
+    return send_feishu(text, FEISHU_WEBHOOK)
 
 
 # ===== 抓取阶段（fetch 模式用）=====
