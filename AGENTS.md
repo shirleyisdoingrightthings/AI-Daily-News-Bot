@@ -93,7 +93,6 @@ logs/archive/ 最近 6 天稿件 ─┐
 | `changelog.md` | 问题追踪，与 health_check 联动 | 按需 |
 | `pending_messages.json` | 飞书推送缓存（降级保护） | 临时 |
 | `com.shirley.ai-daily-news-bot.plist.example` | 环境变量 plist 模板（正式配置在 `~/Library/LaunchAgents/`，是端口/密钥的唯一权威源，`claude_report.sh` 从中读环境变量；不含调度，09:15 launchd 兜底已于 2026-07 移除，失败兜底由 health_check + auto_repair 承担） | 极少 |
-| `com.shirley.ai-daily-news-bot-health.plist` | health_check launchd 配置（11:00 触发） | 极少 |
 
 ---
 

@@ -100,7 +100,6 @@ logs/                  运行时生成，不预置
 | 变量 | 说明 |
 |---|---|
 | `FEISHU_WEBHOOK` | 飞书机器人 webhook（AI 三块共用同一个） |
-| `FEISHU_ALERT_WEBHOOK` | 运维告警走的监测机器人，不进日报群 |
 | `FEISHU_SECRET` | 签名密钥，未开签名校验则留空 |
 | `HTTPS_PROXY` / `HTTP_PROXY` | 本地代理，仅抓取阶段用（推送飞书是直连） |
 
