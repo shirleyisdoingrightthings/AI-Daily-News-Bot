@@ -117,17 +117,18 @@ RSS_SOURCES = [
     # ── 机器人 / 具身智能 ──────────────────────────────────────────
     # 2026-09-03：查 14 天存档发现 #机器人 标签只用过 8 次，且 Figure、Unitree、宇树、
     # 波士顿动力、世界模型、具身智能一次都没出现过——抓到的都是泛科技媒体顺带写的
-    # 消费级机器人，机器人产业本身是空白。加下面两个垂直源补这块。
+    # 消费级机器人，机器人产业本身是空白。加垂直源补这块。
     #
     # The Robot Report：产业向（人形、具身智能、融资、量产），日更，24h 窗口稳定有货。
     # 但它同时是 RoboBusiness 大会的主办方媒体，feed 里常年混着"Learn why … at
     # RoboBusiness"这类会议引流稿——实测 24h 内 3 条里有 2 条是——全靠 _LOW_VALUE_RE
     # 拦，所以那道闸门改成了对垂直源也生效，别再改回只管泛科技源。
     ("https://www.therobotreport.com/feed/",                                 6, False),
-    # TechCrunch 机器人分类：量小质高（一天 0-2 条），补的是「机器人作为生意」这个
-    # 角度（车企转产机器人、无人机管制），和已有的 TechCrunch AI 分类源按 URL 去重，
-    # 重叠条目会被单次运行内的 seen_urls 挡掉。故给 48h 窗口，否则大半天数零产。
-    ("https://techcrunch.com/category/robotics/feed/",                       4, False, 48),
+    # 2026-09-07：移除 TechCrunch 机器人分类（techcrunch.com/category/robotics/feed/，
+    # 曾配 limit 4 / 48h 窗口）。加它是想补「机器人作为生意」这个角度（车企转产机器人、
+    # 无人机管制），但实际发文一天 0-2 条，且与已有的 TechCrunch AI 分类源大量重叠，
+    # 重叠条目在单次运行内就被 seen_urls 挡掉，48h 窗口也没救回来——连续 5 天零产后撤掉。
+    # 机器人这条线由 The Robot Report 单独承担。不要再加回来。
     # 试过但没加的：IEEE Spectrum 机器人（spectrum.ieee.org/feeds/topic/robotics.rss）。
     # 质量最高，但发文成簇、周更节奏——2026-09-03 实测最新一条已是 133 小时前，
     # 给到 120h 窗口仍然零产。当日报源会天天触发"连续 3 天零产"告警，反成噪音。
