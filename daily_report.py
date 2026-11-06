@@ -96,13 +96,8 @@ RSS_SOURCES = [
     ("https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",    5, False),
     ("https://techcrunch.com/category/artificial-intelligence/feed/",        5, False),
     ("https://www.wired.com/feed/tag/ai/latest/rss",                         3, False),
-    # 2026-08-07：MIT Tech Review 放宽到 72h 后仍连续 3 天零产（抓得到，但条条被
-    # 去重/时效/相关性挡下），换成 SemiAnalysis。
-    # 注意用 newsletter 子域的 feed：主站 semianalysis.com/feed/ 最新一篇停在
-    # 2025-09-16，已随内容迁移变成死源，抓了也永远零产。
-    # SemiAnalysis 是每周 2-3 篇的算力/半导体深度稿节奏，24h 窗口必然天天零产，
-    # 故给 120h（仍在 sent_urls 7 天保留期内，同一篇不会重复入选）。
-    ("https://newsletter.semianalysis.com/feed",                             3, False, 120),
+    # 2026-11-06：移除 SemiAnalysis（newsletter.semianalysis.com/feed）。
+    # 原因：它是 Substack 周更深度长文，放入日更产业日报会导致发稿次日起连续 4-6 天零产并反复触发告警。
     ("https://the-decoder.com/feed/",                                        3, False),
     ("https://arstechnica.com/ai/feed/",                                     4, False),
     # 2026-08-06：移除全部厂商官方博客（openai.com/blog、blog.google/technology/ai，
