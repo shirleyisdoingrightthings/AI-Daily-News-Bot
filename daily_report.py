@@ -490,16 +490,10 @@ def run_fetch() -> int:
         print(f"=== SKIP_PROXY === {_PROXY}")
         return 0
 
-    # 周日改出《AI 产业周回顾》：素材以本周已播稿件的存档为主。
-    # 但仍照常抓最近 24h——周六 10:00 到周日 10:00 这段新闻不在任何一天的存档里，
-    # 不抓就永远没人播；抓来并进回顾，send 后照常写 sent_urls 完成去重闭环。
-    # FORCE_WEEKLY=1 可在非周日强制预览回顾流程。
-    is_sunday = datetime.now().weekday() == 6 or os.getenv("FORCE_WEEKLY") == "1"
-    archives   = load_week_archives() if is_sunday else []
-    weekly     = len(archives) >= WEEKLY_MIN_ARCHIVES
-    if is_sunday and not weekly:
-        print(f"ℹ️ 今天是周日，但只有 {len(archives)} 份稿件存档"
-              f"（需 ≥{WEEKLY_MIN_ARCHIVES} 份），本次退回当日日报", file=sys.stderr)
+    # 2026-11-12 规则优化：AI Daily News Bot 取消周回顾，周日与平日一致只出客观 24h 当日日报；
+    # 全局唯一周回顾收敛至 github-hn-bot（基于 GitHub 官方 since=weekly 数据）。
+    weekly = False
+    archives = []
 
     ai_context, rss_fetched, entry_count, zero_sources, source_stats, stale_sources = fetch_news()
 
@@ -605,6 +599,17 @@ def run_send(draft_path: Path) -> int:
     # 存下当天稿件，供周日的《AI 产业周回顾》取材（周回顾稿本身也存，
     # 但回看只取 6 天即周一到周六，不会把上周日的回顾稿卷进下一份回顾）
     archive_draft(report)
+
+    # 自动同步归档到 Notion「每日情报归档与决策看板」数据库
+    try:
+        from notion_archive import archive_to_notion
+        ok, res = archive_to_notion(report, "🤖 AI 产业日报")
+        if ok:
+            print(f"  ✓ 已同步归档至 Notion: {res}", file=sys.stderr)
+        else:
+            print(f"  [WARN] Notion 归档未完成: {res}", file=sys.stderr)
+    except Exception as e:
+        print(f"  [WARN] Notion 归档调用失败: {e}", file=sys.stderr)
 
     # OK 日志：从 fetch 边车取摘要与 metrics，保持 health_check 监控存活
     try:
