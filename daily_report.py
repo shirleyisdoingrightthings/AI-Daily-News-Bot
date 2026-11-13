@@ -2,17 +2,13 @@
 """
 AI 产业日报
 从多个 RSS 源抓取新闻（best-effort 抓正文全文，失败回退 RSS 摘要），
-由 Claude 写稿后推送到飞书。本脚本只负责抓取与推送，不含写稿用的第三方大模型 API。
+由 AI 定时任务写稿后推送到飞书。本脚本只负责抓取与推送，不含写稿用的第三方大模型 API。
 
 两种运行模式（--mode，均零 API 成本）：
-- fetch：抓取 + 抓正文 → 把新闻 context 打到 stdout（供 Claude routine 读取写稿）
-- send ：读取 Claude 写好的稿子文件 → 清洗 HTML → 推送飞书 + 写日志
+- fetch：抓取 + 抓正文 → 把新闻 context 打到 stdout（并落盘 logs/last_context.txt）
+- send ：读取写好的稿子文件 → 清洗 HTML → 推送飞书 + 同步 Notion + 写日志
 
-北京时间周日 fetch 不出当日日报，改出《AI 产业周回顾》：素材是本周每天已推送稿件的
-存档（logs/archive/）+ 最近 24 小时新增，stdout 标记为 === WEEKLY_OK ===。
-两种稿子共用同一个 send 流程与 run.log 格式，health_check / auto_repair 无需改动。
-
-写稿规范存放于同目录 prompt.md（日报）与 prompt_weekly.md（周回顾），由 Claude routine 读取。
+注：每日（含周日）统一输出当日客观新闻日报；写稿规范存放于同目录 prompt.md。
 """
 
 import os
@@ -56,14 +52,6 @@ SENT_URLS   = Path(__file__).parent / "logs" / "sent_urls.json"
 ZERO_STREAK = Path(__file__).parent / "logs" / ".zero_streak.json"
 # 连续零产多少天就判定该源可以移除
 ZERO_STREAK_THRESHOLD = 3
-# 当日稿件存档目录：send 成功后按日期归档，供周日的「本周回顾」取材
-ARCHIVE_DIR = Path(__file__).parent / "logs" / "archive"
-# 存档保留天数（周回顾只回看 6 天，多留几天方便人工排查）
-ARCHIVE_KEEP_DAYS = 14
-# 周回顾回看天数：6 = 周一到周六，不含今天（周日），也就不会把上周日的回顾稿卷进来
-WEEKLY_LOOKBACK_DAYS = 6
-# 存档少于这个份数就不出回顾，退回当日日报（刚上线的头几天、长时间没开机时）
-WEEKLY_MIN_ARCHIVES = 3
 # 默认时效窗口（小时）。个别发文节奏慢的源可在 RSS_SOURCES 里单独放宽，
 # 上限受 sent_urls 的 7 天保留期约束——超过 7 天的窗口会让旧条目重新入选。
 DEFAULT_WINDOW_H = 24
@@ -270,64 +258,6 @@ save_pending = make_pending_saver(CACHE_FILE)
 
 
 
-# ===== 稿件存档（周日「本周回顾」的素材来源）=====
-def archive_draft(report: str) -> None:
-    """把刚推送成功的稿子按日期归档，并清掉过期存档。
-
-    周回顾必须靠存档，不能靠周日重新抓：RSS feed 只保留最近几十条，周一的新闻
-    到周日早已滚出 feed；且这些链接都在 sent_urls 的跨天去重档案里，重抓也会被挡。
-    存档里的稿子已经筛过、写好、带链接，是唯一稳妥的素材来源。
-    归档只是锦上添花，失败绝不能影响已经成功的推送，故整体 try 住。"""
-    try:
-        ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-        today = datetime.now().strftime("%Y-%m-%d")
-        (ARCHIVE_DIR / f"{today}.txt").write_text(report, encoding="utf-8")
-        cutoff = datetime.now() - timedelta(days=ARCHIVE_KEEP_DAYS)
-        for f in ARCHIVE_DIR.glob("*.txt"):
-            try:
-                if datetime.strptime(f.stem, "%Y-%m-%d") < cutoff:
-                    f.unlink()
-            except ValueError:
-                continue        # 文件名不是日期格式，不归本函数管，留着
-        print(f"  ✓ 稿件已归档 logs/archive/{today}.txt", file=sys.stderr)
-    except Exception as e:
-        print(f"  ⚠️ 稿件归档失败（不影响本次推送）：{e}", file=sys.stderr)
-
-
-def load_week_archives(days: int = WEEKLY_LOOKBACK_DAYS) -> list:
-    """读最近 days 天（不含今天）的存档，按日期从旧到新返回 [(日期, 稿件正文)]。
-
-    缺哪天跳哪天——某天没出稿不该让整个周回顾停摆。"""
-    today = datetime.now().date()
-    out = []
-    for i in range(days, 0, -1):
-        day  = today - timedelta(days=i)
-        path = ARCHIVE_DIR / f"{day.isoformat()}.txt"
-        if not path.exists():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-        except Exception:
-            continue
-        if text:
-            out.append((day.isoformat(), text))
-    return out
-
-
-def _missing_archive_days(archives: list) -> list:
-    """回看窗口内哪些天没有存档，返回日期字符串列表（旧 → 新）。
-
-    用途只有一个：让 fetch 的 stdout 明说"这周缺哪几天"。周回顾的素材完整性
-    是静默失效的——某天没开电脑，存档就少一份，而 load_week_archives 只是跳过，
-    写稿方无从知道自己拿到的是残缺的一周。"""
-    have  = {day for day, _ in archives}
-    today = datetime.now().date()
-    return [d for d in
-            ((today - timedelta(days=i)).isoformat()
-             for i in range(WEEKLY_LOOKBACK_DAYS, 0, -1))
-            if d not in have]
-
-
 # ===== 整理新闻数据 =====
 def build_ai_context(all_entries: list) -> tuple:
     """整理素材，返回 (context, kept_per_source, drop_stats)。
@@ -490,76 +420,49 @@ def run_fetch() -> int:
         print(f"=== SKIP_PROXY === {_PROXY}")
         return 0
 
-    # 2026-11-12 规则优化：AI Daily News Bot 取消周回顾，周日与平日一致只出客观 24h 当日日报；
-    # 全局唯一周回顾收敛至 github-hn-bot（基于 GitHub 官方 since=weekly 数据）。
-    weekly = False
-    archives = []
-
     ai_context, rss_fetched, entry_count, zero_sources, source_stats, stale_sources = fetch_news()
 
-    # 日报没素材就不发；周回顾的主素材是存档，24h 无新增照样成立
-    if not ai_context and not weekly:
+    if not ai_context:
         print("=== NO_NEWS ===")
         write_log("WARN", "过去24小时无有效新闻，未发送")
         return 0
 
     # 写边车：OK 日志摘要 + metrics，供 send 模式回填（保持 health_check 监控存活）
-    log_summary = (f"周回顾{len(archives)}天存档 + 新增{entry_count}条"
-                   if weekly else f"抓取{rss_fetched}条 → 保留{entry_count}条")
+    log_summary = f"抓取{rss_fetched}条 → 保留{entry_count}条"
     FETCH_META.write_text(
         json.dumps(
             {"log_summary": log_summary,
-             "kind": "weekly" if weekly else "daily",
+             "kind": "daily",
              "metrics": {"rss_fetched": rss_fetched, "rss_kept": entry_count,
                          "rss_zero_sources": zero_sources,
                          "rss_source_stats": source_stats,
                          "rss_stale_sources": stale_sources,
-                         "report_kind": "weekly" if weekly else "daily",
-                         "weekly_archive_days": len(archives)}},
+                         "report_kind": "daily"}},
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
 
     today = datetime.now().strftime("%Y-%m-%d")
-    # stdout 只输出结构化标记 + context，供 Claude routine 稳定解析。
+    # stdout 只输出结构化标记 + context，供定时任务稳定解析。
     # 先攒成一个列表再一次性交给 emit_fetch_output，顺带落盘 logs/last_context.txt。
-    out = ["=== WEEKLY_OK ===" if weekly else "=== FETCH_OK ===",
-           f"今天日期：{today}"]
-    if weekly:
-        out.append(f"本周回顾覆盖 {len(archives)} 天存档（{archives[0][0]} ~ {archives[-1][0]}），"
-                   f"另有最近 24 小时新增 {entry_count} 条")
-        # 存档缺天 = 那天根本没出稿（多半是没开电脑）。load_week_archives 会静默跳过，
-        # 不点出来的话，写稿方会把一份只覆盖 4 天的回顾当成完整的一周来写。
-        missing = _missing_archive_days(archives)
-        if missing:
-            out.append("=== ARCHIVE_GAP ===")
-            out.append(f"本周有 {len(missing)} 天没有存档（当天未出稿）：{', '.join(missing)}")
-            out.append("=== ARCHIVE_GAP_END ===")
-    else:
-        out.append(f"保留 {entry_count} 条有效新闻（共抓取 {rss_fetched} 条）")
+    out = ["=== FETCH_OK ===",
+           f"今天日期：{today}",
+           f"保留 {entry_count} 条有效新闻（共抓取 {rss_fetched} 条）"]
     if zero_sources:
         out.append(f"零产源：{', '.join(zero_sources)}")
-    # 连续零产达阈值 → 结构化告警块，供 routine 在日报汇报里转述给用户
+    # 连续零产达阈值 → 结构化告警块，供定时任务在日报汇报里转述给用户
     if stale_sources:
         out.append("=== SOURCE_ALERT ===")
         for d, n in stale_sources.items():
             out.append(f"{d} 已连续 {n} 天零产，建议从 RSS_SOURCES 移除或更换")
         out.append("=== SOURCE_ALERT_END ===")
-    # 周回顾的主素材：本周每天已播出去的完整稿件，按日期从旧到新
-    if weekly:
-        out.append("=== ARCHIVE_BEGIN ===")
-        for day, text in archives:
-            out.append(f"===== {day} 日报 =====")
-            out.append(text)
-            out.append("")
-        out.append("=== ARCHIVE_END ===")
     out += ["=== CONTEXT_BEGIN ===", ai_context, "=== CONTEXT_END ==="]
     emit_fetch_output(out, LAST_CONTEXT)
     return 0
 
 
-# ===== 模式 2：send — 读取 Claude 写好的稿子并发送（零 API 成本）=====
+# ===== 模式 2：send — 读取写好的稿子并发送（零 API 成本）=====
 def run_send(draft_path: Path) -> int:
     t0 = time.time()
 
@@ -596,10 +499,6 @@ def run_send(draft_path: Path) -> int:
         print(f"  ✓ 已归档 {len(hrefs)} 条链接用于跨天去重（档案共 {total} 条）",
               file=sys.stderr)
 
-    # 存下当天稿件，供周日的《AI 产业周回顾》取材（周回顾稿本身也存，
-    # 但回看只取 6 天即周一到周六，不会把上周日的回顾稿卷进下一份回顾）
-    archive_draft(report)
-
     # 自动同步归档到 Notion「每日情报归档与决策看板」数据库
     try:
         from notion_archive import archive_to_notion
@@ -619,9 +518,9 @@ def run_send(draft_path: Path) -> int:
     duration = round(time.time() - t0, 1)
     write_log(
         "OK",
-        f"Claude写稿 → {meta.get('log_summary', '')} → 飞书推送成功（{sent} 条 / {len(report)}字）",
+        f"AI写稿 → {meta.get('log_summary', '')} → 飞书推送成功（{sent} 条 / {len(report)}字）",
         metrics={**meta.get("metrics", {}), "ai_calls": 0, "duration_s": duration,
-                 "report_chars": len(report), "source": "claude"},
+                 "report_chars": len(report), "source": "antigravity"},
     )
     return 0
 
@@ -630,7 +529,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI 产业日报")
     parser.add_argument(
         "--mode", choices=["fetch", "send"], required=True,
-        help="fetch=抓取并输出 context（供 Claude 写稿，零 API）/ send=发送 Claude 写好的稿子",
+        help="fetch=抓取并输出 context（零 API）/ send=发送写好的稿子",
     )
     parser.add_argument(
         "--file", type=Path, default=DRAFT_FILE,

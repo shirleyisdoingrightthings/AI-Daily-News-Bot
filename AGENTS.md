@@ -1,235 +1,94 @@
 # AI Daily News Bot — AI 操作手册
 
-> **通用文件**：适用于 Claude Code、Cursor、GitHub Copilot、Codex 等任何 AI 工具。  
-> Claude Code 专属上下文见 `CLAUDE.md`（在此基础上做了精简，避免冗余）。
+> **通用文件**：适用于 Antigravity、Cursor、GitHub Copilot 等 AI 工具。
 
 ---
 
 ## 工作流概述
 
-这是一个 **AI 产业日报系统**。每早由本地 Claude 定时任务触发：`daily_report.py --mode fetch` 抓取资讯（best-effort 抓正文全文，失败回退 RSS 摘要）→ Claude 按 `prompt.md` 写稿 → `daily_report.py --mode send` 推送飞书。脚本本身只做抓取与推送，零第三方大模型 API、零 token 成本。
+这是一个 **AI 产业日报系统**。每天 15:00 由 Antigravity Sidecar 定时任务触发：`daily_report.py --mode fetch` 抓取资讯（best-effort 抓正文全文，失败回退 RSS 摘要）→ AI 按 `prompt.md` 写稿落盘 `logs/report_draft.txt` → `daily_report.py --mode send` 推送飞书并同步归档 Notion。脚本本身零第三方大模型 API、零 token 成本。
 
-**周日出的是《AI 产业周回顾》而非当日日报**，素材取本周稿件存档，写稿规范换成 `prompt_weekly.md`，详见下方「周日周回顾」一节。
+**每日统一出当日客观日报（已永久取消周日《AI 产业周回顾》）**：全局唯一周趋势回顾收敛至周日 `github-hn-bot`。
 
 ### 数据流
 
-```
-[数据源]                          [抓取 / 写稿]                     [输出]
-RSS × 10 源 ──▶ daily_report.py --mode fetch
-（The Verge / TechCrunch /         │  build_ai_context()
- VentureBeat / Wired /             │  ├─ 并发 best-effort 抓正文全文
- MIT Tech Review / Engadget /      │  └─ 抓不到 → 回退 RSS 摘要
- IEEE / Ars Technica /             ▼
- The Decoder）              Claude 按 prompt.md 写稿 → logs/report_draft.txt
-                                   ▼
-                            daily_report.py --mode send ──▶ 飞书（AI 产业日报）
-                                   │
-                                   └─▶ logs/archive/YYYY-MM-DD.txt（存档，供周回顾取材）
-
-周日（北京时间）：
-logs/archive/ 最近 6 天稿件 ─┐
-                             ├─▶ fetch 输出 === WEEKLY_OK ===
-最近 24h 新增（照常抓）      ─┘         │
-                                        ▼
-                       Claude 按 prompt_weekly.md 写稿 → 同一个 report_draft.txt
-                                        ▼
-                             --mode send ──▶ 飞书（AI 产业周回顾）
+```text
+RSS 源 ──▶ daily_report.py --mode fetch
+            ├─ build_ai_context()（24h 窗口 + 7 天 sent_urls 去重）
+            ├─ 并发 best-effort 抓正文全文（失败回退 RSS 摘要）
+            └─ 输出 logs/last_context.txt + stdout（=== FETCH_OK ===）
+                  ▼
+            AI 按 prompt.md 写稿（最多入选 12 条）→ logs/report_draft.txt
+                  ▼
+            daily_report.py --mode send ──▶ 飞书（AI 产业日报）+ Notion 看板归档
 ```
 
-### 自动化调度
+### 自动化调度（方案 B）
 
-```
-10:00  Claude 定时任务（唯一写稿入口）
-         claude_report.sh fetch → Claude 写稿 → claude_report.sh send
-                       │
-                  run.log [OK/FAIL]
+```text
+15:00  Antigravity Sidecar（ai-daily-afternoon，Part A）
+         claude_report.sh fetch → 写稿 → claude_report.sh send → run.log [OK/FAIL]
 
-11:00  launchd → health_check.sh
-                       │
-           ┌── [OK] ───┼── .ok_streak +1
-           │                streak ≥ 3 → 删除 changelog 中 [x] 条目
-           │
-           ├── [无记录] ── claude_catchup.sh 无头补跑（自动版 Run Now）
-           │                claude CLI 重走 fetch → 写稿 → send；同一天只补跑一次
-           │
-           └── [FAIL] ─── changelog 新增 [ ] 条目
-                       └─▶ auto_repair.sh（后台触发；先查当日稿件，缺稿直接转无头补跑）
-                                 │
-                         瞬时错误？
-                         ├─ Yes → 等 30s → 重跑 send
-                         │         ├─ 成功 → changelog [x]
-                         │         └─ 失败 → 升级
-                         └─ No  → claude CLI 分析修复 → 重跑 send
-                                   ├─ 成功 → changelog [x]
-                                   └─ 失败 → claude_catchup.sh 无头补跑
-                                             ├─ 成功 → changelog [x]
-                                             └─ 失败 → macOS 通知 → 人工介入
+16:00  launchd（com.shirley.ai-chain-health）→ health_check.sh
+         ├─ [OK / 无有效新闻]  记录连续正常天数 / 正常终止
+         ├─ [无记录]           发告警提示；开机唤醒补跑由 Antigravity Sidecar 负责（不再拉起无头 CLI）
+         └─ [FAIL]             若 drafts_fresh 则 Level 1 重跑 send；否则发告警通知人工介入
 ```
 
 ---
 
 ## 文件结构与职责
 
-| 文件 | 职责 | 修改频率 |
-|------|------|---------|
-| `daily_report.py` | 主脚本：`--mode fetch`（抓取+抓正文）/ `send`（清洗+推送），零第三方大模型 API | 偶尔 |
-| `claude_report.sh` | 供 Claude 定时任务调用的 fetch/send 封装（从 plist 加载环境变量） | 极少 |
-| `prompt.md` | 当日日报的写稿规范（唯一权威源，Claude 依此写稿） | 偶尔 |
-| `prompt_weekly.md` | 周日《AI 产业周回顾》的写稿规范（跨天合并 + 按周重新评分 + 主题分组） | 偶尔 |
-| `~/.gemini/bots/shared/bot_utils.py` | 共享工具库（各 bot 共用）：基础工具 + 抓正文 + 跨天去重 + 相关性闸门 + 分页页码 + 代理自愈 + 零产监测，完整清单见文件头 | 偶尔 |
-| `~/.gemini/bots/shared/scheduled-tasks/` | 10:00 定时任务 prompt 的版本化备份（原件在 `~/.claude/scheduled-tasks/`，跨各 bot，故放共享层而非本仓库）。改完 routine 记得同步回去 | 偶尔 |
-| `health_check.sh` | 检查 run.log，触发 auto_repair | 极少 |
-| `auto_repair.sh` | 两级自动修复代理（委托 `~/.gemini/bots/shared/auto_repair_base.sh`；重跑走 claude_report.sh send，先做当日稿件新鲜度检查） | 极少 |
-| `claude_catchup.sh` | 无头补跑薄包装（委托 `~/.gemini/bots/shared/headless_catchup_base.sh`）：当天未出稿或自愈失败时由 claude CLI 完整重走流程；同一天只补跑一次（logs/.catchup_ran 戳记） | 极少 |
-| `logs/report_draft.txt` | 当日 Claude 写好的稿子（send 读取后推送；日报与周回顾共用此文件） | 每日写入 |
-| `logs/archive/YYYY-MM-DD.txt` | 已推送稿件按日存档，保留 14 天，周回顾的唯一素材来源 | 每日写入 |
-| `logs/fetch_meta.json` | fetch 边车：日志摘要 + 指标（send 回填，供体检监控） | 每日写入 |
-| `logs/run.log` | 单行摘要日志（人类可读） | 每日写入 |
-| `logs/run.jsonl` | 结构化指标（程序可读） | 每日写入 |
-| `logs/sent_urls.json` | 跨天去重档案：已推送链接 → 日期（保留 7 天，send 成功后写入） | 每日写入 |
-| `logs/.zero_streak.json` | 各源连续零产天数（health_check 维护，达 3 天才告警） | 每日写入 |
-| `logs/health_check.log` | health_check 运行日志 | 每日写入 |
-| `logs/headless_catchup.log` | 无头补跑运行日志 | 触发时写入 |
-| `changelog.md` | 问题追踪，与 health_check 联动 | 按需 |
-| `pending_messages.json` | 飞书推送缓存（降级保护） | 临时 |
-| `com.shirley.ai-daily-news-bot.plist.example` | 环境变量 plist 模板（正式配置在 `~/Library/LaunchAgents/`，是端口/密钥的唯一权威源，`claude_report.sh` 从中读环境变量；不含调度，09:15 launchd 兜底已于 2026-07 移除，失败兜底由 health_check + auto_repair 承担） | 极少 |
+| 文件 | 职责 |
+|---|---|
+| `daily_report.py` | 主脚本：`--mode fetch` / `--mode send`（清洗 HTML、推送飞书、归档 Notion、写日志） |
+| `claude_report.sh` | 命令行封装，委托 `../shared/report_base.sh` 从 plist 加载环境变量后执行 `daily_report.py` |
+| `prompt.md` | 当日日报写稿规范（唯一权威源） |
+| `../shared/bot_utils.py` | 共享工具库：代理自愈（`127.0.0.1:1082`）、RSS 抓取、正文提取、跨天去重、分页 |
+| `../shared/notion_archive.py` | Notion「每日情报归档与决策看板」同步模块 |
+| `../shared/scheduled-tasks/ai-daily-afternoon/SKILL.md` | 15:00 定时任务指令版本化备份 |
+| `health_check.sh` / `auto_repair.sh` | 轻量化健康检查与 Level 1 重发兜底（委托 `../shared/`） |
+| `logs/report_draft.txt` | 当日写好的纯正文（`write_file Overwrite: true` 写入） |
+| `logs/last_context.txt` | `fetch` 完整素材落盘 |
+| `logs/fetch_meta.json` | `fetch` 边车指标（供 `send` 回填） |
+| `logs/run.log` / `logs/run.jsonl` | 单行人类可读日志 & 结构化指标日志 |
+| `logs/sent_urls.json` | 7 天跨天去重档案 |
+| `logs/.zero_streak.json` | 各源连续零产天数（`fetch` 单点写入，连续 3 天告警） |
+| `pending_messages.json` | 发送前持久化备份（防消息丢失） |
+| `com.shirley.ai-daily-news-bot.plist.example` | `~/Library/LaunchAgents/` 环境变量模板（含 `1082` 代理端口与 `FEISHU_WEBHOOK`） |
 
 ---
 
 ## 关键约定（修改前必读）
 
-### 数据源与 API
-
-| 类别 | 来源 | 条数 | 备注 |
-|-----|------|------|------|
-| 主流科技（5 条） | The Verge (AI) / TechCrunch / VentureBeat (AI) | 各 5 条 | 免费 RSS |
-| 主流科技（4 条） | Engadget | 4 条 | 免费 RSS |
-| 深度/垂直（3 条） | The Verge (Reviews) / Wired / MIT Tech Review / IEEE Spectrum / Ars Technica / The Decoder | 各 3 条 | 免费 RSS |
-| 正文抓取 | 各新闻源文章页 | - | best-effort 抓正文（JSON-LD `articleBody` / `<p>` 启发式），失败回退 RSS 摘要，零依赖 |
-
 ### 日志格式（不得改动）
-```
+```text
 YYYY-MM-DD HH:MM  [OK/FAIL/WARN]  消息内容
 ```
-`health_check.sh` 依赖 `[FAIL]` 字符串匹配，改动格式会导致健康检查失效。
+`health_check.sh` 依赖 `[FAIL]` 字符串匹配与 `NO_NEWS_PATTERN="无有效新闻"`，改动格式会导致健康检查失效。
 
 ### 稿件格式（HTML 中间格式 → 飞书卡片 markdown）
-- 所有 AI 输出必须是 **HTML 格式**，禁止 Markdown
-- 只能使用 `<b>` 和 `<a href="...">` 两种标签
-- 这层 HTML 只是**内部中间格式**：`bot_utils.html_to_lark_md` 在推送前把它翻译成
-  飞书卡片 markdown（`<b>x</b>` → `**x**`，`<a href><b>标题</b></a>` → `**[标题](url)**`）。
-  ⚠️ 加粗超链接**只有 `**[文字](url)**` 这一种写法有效**，`[**文字**](url)` 真机不生效
-  保留 HTML 是为了让 `extract_hrefs` 的跨天去重和 `logs/archive` 的周回顾取材继续工作
-- 单条消息上限是 webhook 请求体 20KB（markdown 较紧凑，约 1 万汉字）；超长由 `bot_utils.paginate_feishu`
-  按段落边界切分，**每条顶部加加粗的 `（n/N）` 页码**（单条不加）。切分点不会腰斩条目；
-  切完还会二次均衡，避免出现只有两行的尾页
+- 只能使用 `<b>` 和 `<a href="...">` 两种标签，禁止 Markdown `**`；
+- `bot_utils.html_to_lark_md` 会将其翻译为飞书 markdown（`<a href><b>标题</b></a>` → `**[标题](url)**`）；
+- 单条消息预算约 `20KB`，超长时由 `bot_utils.paginate_feishu` 按段落切分并加页码。
 
-### 分源零产监控与源淘汰
-- 每次 fetch 把各源 `{fetched, kept}` 写入 JSONL 的 `rss_source_stats`；`rss_zero_sources` 列出**过滤后一条都没剩**的源
-- 判定口径是"过滤后零产"而非"RSS 拉到 0 条"——源可能天天拉得到却条条过期/重复/已播，旧口径发现不了
-- `logs/.zero_streak.json` 累计各源连续零产天数，**由 fetch 单点写入**（`update_zero_streak`），health_check 只读不写，避免两处各加一次把天数翻倍
-- 连续 **3 天**零产 → fetch 的 stdout 输出 `=== SOURCE_ALERT ===` 块（routine 会在日报汇报里单列「RSS 源健康」），同时写入 metrics 的 `rss_stale_sources`，health_check 据此发 macOS 通知
-- 收到告警即可把该源从脚本的 `RSS_SOURCES` 移除或更换；源一旦恢复产出，计数自动清零并移出档案
-
-### 新闻时效
-- AI Daily News Bot 默认收录 **24 小时内**新闻（`DEFAULT_WINDOW_H = 24`）
-- 时效窗**按源可调**：`RSS_SOURCES` 的元组第 4 位是该源的窗口小时数，省略即用默认值。给周更/深度稿节奏的源单独放宽，不要全局放宽
-- 放宽上限受 `sent_urls` 的 **7 天**保留期约束；窗口超过 7 天，旧条目会脱离跨天去重的覆盖范围而重复入选
-- 现有例外：`newsletter.semianalysis.com` = 120h（2026-08-07 起，每周 2-3 篇的深度稿节奏）
-- 已淘汰：`www.technologyreview.com`（72h 窗口下仍连续 3 天零产，2026-08-07 换成 SemiAnalysis）；
-  SemiAnalysis 只能用 `newsletter.semianalysis.com/feed`，主站 `semianalysis.com/feed/` 停更在 2025-09，是死源
-
-### 周日周回顾
-- **北京时间周日不出当日日报，改出《AI 产业周回顾》**。机器时区就是 `Asia/Shanghai`，脚本用 `datetime.now().weekday() == 6` 判定，无需额外时区换算
-- 判定在 `daily_report.py` 里做，**不要挪到 routine 的 prompt 里**：`claude_report.sh fetch` 仍是唯一入口，脚本用 stdout 标记告诉 Claude 今天出哪种稿（`=== FETCH_OK ===` = 日报 / `=== WEEKLY_OK ===` = 周回顾），模型不负责算星期几
-- **素材必须来自 `logs/archive/`，不能靠周日重抓**：RSS feed 只保留最近几十条，周一的新闻到周日早已滚出 feed；且这些链接都在 `sent_urls` 去重档案里，重抓也会被挡下
-- 回看窗口 `WEEKLY_LOOKBACK_DAYS = 6`（周一到周六，不含当天）。刻意不取 7 天——取 7 会把上周日的回顾稿本身卷进新回顾里
-- 周日仍照常抓最近 24h 并把新增条目并进回顾。周六 10:00 到周日 10:00 这段新闻不在任何一天的存档里，不抓就永远没人播；send 后照常写 `sent_urls`，去重闭环不断
-- 存档不足 `WEEKLY_MIN_ARCHIVES = 3` 份时**自动退回当日日报**（刚上线的头几天、长时间没开机），stderr 会说明原因
-- 周回顾复用同一个 `report_draft.txt`、同一个 send 流程、同一套 `run.log` `[OK]` 格式，因此 `health_check.sh` / `auto_repair.sh` 完全不需要改
-- `FORCE_WEEKLY=1 bash claude_report.sh fetch` 可在非周日预览周回顾流程（只抓取不发送）
+### 分源零产监控与时效
+- 默认收录 **24 小时内**新闻（`DEFAULT_WINDOW_H = 24`），RSS 抓取最多重试 2 次（退避 3 → 6s），飞书推送最多重试 3 次；
+- `logs/.zero_streak.json` 由 `fetch` 单点写入，连续 3 天零产触发 `=== SOURCE_ALERT ===`。
 
 ### 代理
-- 固定走 `127.0.0.1:YOUR_PORT` (本地代理端口)
-- 端口在 `~/Library/LaunchAgents/com.shirley.ai-daily-news-bot.plist` 的 `HTTP_PROXY`/`HTTPS_PROXY` 里配置（唯一权威源）；改完即生效，`claude_report.sh` 每次运行时直接读文件，无需重载 launchd
-- 抓取侧的 `requests` 与 `feedparser` 都通过 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量走代理；
-  推送侧用 `bot_utils` 里 `trust_env=False` 的专用 Session **直连飞书，不走代理**
-
-### 重试策略
-- 飞书推送：最多 3 次，退避 5 → 10 → 15s。飞书失败时照样返回 HTTP 200，
-  故成败只看响应体里的 `code`（非 0 即当作失败重试）
-- RSS 抓取（fetch_rss）：最多 2 次，退避 3 → 6s
-- 正文抓取（fetch_article_text）：best-effort、单次、失败即回退 RSS 摘要，不重试
-
-### 消息缓存降级
-- send 模式推送前把稿子写入 `pending_messages.json`
-- 飞书推送成功后删除该文件
-- 缓存用于避免内容丢失（可人工恢复），当前 Claude 流程不做自动重发
-
----
-
-## 修改禁区
-
-| 禁止操作 | 原因 |
-|---------|------|
-| 修改 `run.log` 的 `[OK]/[FAIL]/[WARN]` 格式 | health_check.sh 依赖字符串匹配 |
-| 删除 `save_pending()` 调用 | 发送失败时稿件会永久丢失，无法人工恢复 |
-| 修改 PROMPT 中的 HTML 输出格式 | HTML 是内部中间格式，`html_to_lark_md` 与 `extract_hrefs` 都按它解析 |
-| 将 `timedelta(days=1)` 改小 | 会漏掉重要新闻 |
-| 修改 `with_retry` 的 exceptions 参数 | 会影响重试覆盖范围 |
-| 替换核心 RSS 源 | 确保数据抓取的广度与质量 |
-| 修改 `daily_report.py` 的 HTML 清洗逻辑 | 清洗与推送时的 unescape 互为逆运算，改一边会让正文里的 `<` `&` 串味 |
-| 删除 `archive_draft()` 调用 | 存档断一天，下个周日的周回顾就少一天素材且无法补回 |
-| 把 `WEEKLY_LOOKBACK_DAYS` 改成 7 | 会把上周日的回顾稿卷进本周回顾，造成回顾套回顾 |
+- 统一走 `http://127.0.0.1:1082`（由 `~/Library/LaunchAgents/com.shirley.ai-daily-news-bot.plist` 配置）；
+- 推送飞书使用 `trust_env=False` 直连；Notion 归档优先走代理并保留直连兜底。
 
 ---
 
 ## 调试入口
 
 ```bash
-# 查看最近运行状态
 tail -5 logs/run.log
-
-# 查看结构化指标（含耗时）
 tail -3 logs/run.jsonl | python3 -m json.tool
-
-# 查看当前问题清单
-cat changelog.md
-
-# 手动抓取 / 发送（Claude 定时任务用同一封装）
-bash claude_report.sh fetch     # 抓取 + 抓正文，输出写稿素材（周日自动改出周回顾素材）
-bash claude_report.sh send      # 读取 logs/report_draft.txt 并推送
-
-# 非周日预览周回顾流程（只抓取，不发送）
-FORCE_WEEKLY=1 bash claude_report.sh fetch
-
-# 查看稿件存档（周回顾的素材）
-ls logs/archive/
-
-# 手动运行健康检查
+bash claude_report.sh fetch
+bash claude_report.sh send
 bash health_check.sh
-
-# 查看 launchd 任务状态
 launchctl list | grep shirley
 ```
-
----
-
-## AI 工具使用说明
-
-### 如果你是 Claude Code
-自动加载 `CLAUDE.md`（内含额外的 Claude 专属指令）。本文件提供完整上下文。
-
-### 如果你是 Cursor / GitHub Copilot / 其他工具
-直接阅读本文件（`AGENTS.md`）即可获得完整上下文。
-如果工具支持自定义规则文件，将本文件路径加入即可：
-- Cursor：将内容复制到 `.cursorrules`
-- GitHub Copilot：将内容复制到 `.github/copilot-instructions.md`
-
-### Auto-Repair 代理行为规范
-当 `auto_repair.sh` 调用 Claude CLI 时，Claude 应当：
-1. 只修复**最小范围**的问题
-2. 修复后必须输出 `FIX: <一行说明>` 或 `CANNOT_FIX: <原因>`
-3. 不得触碰修改禁区中的任何内容
-4. 如果不确定根因，选择 `CANNOT_FIX` 而不是盲目修改
-
